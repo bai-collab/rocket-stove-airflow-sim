@@ -38,8 +38,9 @@
         <input id="particleCount" type="range" min="80" max="500" step="20" value="240" />
 
         <div class="legend">
-          <span><i class="dot air"></i> 空氣</span>
+          <span><i class="dot air"></i> 新鮮空氣</span>
           <span><i class="dot heat"></i> 受熱空氣</span>
+          <span><i class="dot exhaust"></i> 燃燒後氣體</span>
           <span><i class="box wall"></i> 爐壁</span>
         </div>
       </aside>
@@ -63,6 +64,10 @@
           <span>停滯粒子比例</span>
           <strong id="stagnantRate">—</strong>
         </div>
+        <div class="metric-card">
+          <span>燃燒區新鮮空氣</span>
+          <strong id="oxygenRate">—</strong>
+        </div>
         <div id="feedback" class="feedback">周圍已充滿空氣。先設計火箭爐，再按「點火」。</div>
       </aside>
     </section>
@@ -71,11 +76,12 @@
       <h2>學生觀察重點</h2>
       <ul>
         <li>點火後，原本周圍的空氣是否開始被帶動？</li>
-        <li>哪些轉角或狹窄處讓粒子變慢或卡住？</li>
+        <li>封閉空間裡，燃燒後氣體是否逐漸累積？</li>
+        <li>新鮮空氣不足時，火焰是否逐漸變弱並熄滅？</li>
         <li>改變進氣口與煙囪位置後，流動是否變順？</li>
       </ul>
     </section>
   </main>
-  <script src="js/app.js?v=20260825-6"></script>
+  <script src="js/app.js?v=20260825-7"></script>
 </body>
 </html>
