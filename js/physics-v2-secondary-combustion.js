@@ -1,11 +1,12 @@
-/* Physics v2.5: simplified biomass combustion + secondary combustion.
+/* Physics v2.5.2: rice-straw combustion + secondary combustion.
  *
  * Educational goals:
- * - openings in the geometry determine natural inflow/outflow; no inlet/chimney source is required
- * - smoke does not disappear with time by itself
- * - incomplete primary combustion produces unburned gas + smoke
- * - hot, oxygen-rich, well-mixed gas can burn again (secondary combustion)
- * - black-smoke visualization comes from the smoke scalar, not tracer density
+ * - every fire tile represents burning rice straw
+ * - rice straw releases combustible gases; incomplete combustion creates black smoke
+ * - fresh-air tracers only visualize the air stream; the oxygen scalar actually controls combustion
+ * - better oxygen supply lowers primary black-smoke formation
+ * - hot, oxygen-rich, well-mixed gases can burn again (secondary combustion)
+ * - black smoke and combustion-product gas are separate substances in the model
  *
  * This is a reduced-order teaching model, NOT combustion CFD and NOT an
  * emissions predictor for CO, PM2.5, soot mass, or real stove efficiency.
@@ -24,16 +25,16 @@
   const PLUME_HEAT_RATE = 265;
   const REACTION_RADIUS = 48;
 
-  const GAS_RELEASE_RATE = 0.42;        // relative scalar / s
-  const PRIMARY_BURN_RATE = 3.2;        // s^-1
+  const STRAW_GAS_RELEASE_RATE = 0.42;
+  const PRIMARY_BURN_RATE = 3.2;
   const PRIMARY_O2_USE = 0.34;
   const PRIMARY_HEAT_GAIN = 185;
-  const BASE_SOOT_YIELD = 0.08;
-  const O2_DEFICIT_SOOT_YIELD = 0.52;
+  const CLEAN_SOOT_YIELD = 0.025;
+  const DIRTY_SOOT_YIELD = 0.62;
 
-  const SECONDARY_T_START = 170;        // C, educational threshold
-  const SECONDARY_T_FULL = 430;         // C
-  const SECONDARY_RATE = 2.3;           // s^-1
+  const SECONDARY_T_START = 170;
+  const SECONDARY_T_FULL = 430;
+  const SECONDARY_RATE = 2.3;
   const SECONDARY_O2_USE = 0.30;
   const SECONDARY_HEAT_GAIN = 210;
   const SOOT_OXIDATION_FACTOR = 0.55;
@@ -70,8 +71,6 @@
     return clamp((o2 - 0.08) / 0.72, 0, 1);
   }
 
-  // Replace the v2.1 plume source with an incomplete-combustion source.
-  // The geometry of heating/radiation is intentionally kept close to v2.1.
   applyFireAndRadiation = function(dt) {
     for (const fire of fires) {
       const fx = fire.x + BUILD_CELL / 2;
@@ -122,9 +121,7 @@
             const w = 1 - d / REACTION_RADIUS;
             const o2Factor = primaryOxygenFactor(oxygen[i]);
 
-            // Biomass heating releases combustible volatiles first. A fraction
-            // burns in the primary flame; oxygen deficit increases smoke yield.
-            const released = GAS_RELEASE_RATE * w * intensity * dt;
+            const released = STRAW_GAS_RELEASE_RATE * w * intensity * dt;
             unburnedGas[i] = clamp(unburnedGas[i] + released, 0, 1.5);
 
             const burnPotential = PRIMARY_BURN_RATE * w * intensity * o2Factor * unburnedGas[i] * dt;
@@ -141,7 +138,9 @@
               MAX_T
             );
 
-            const sootYield = BASE_SOOT_YIELD + O2_DEFICIT_SOOT_YIELD * (1 - o2Factor);
+            const burnFraction = clamp(actualBurn / Math.max(released, 1e-6), 0, 1);
+            const completeness = clamp(o2Factor * (0.72 + 0.28 * burnFraction), 0, 1);
+            const sootYield = CLEAN_SOOT_YIELD + DIRTY_SOOT_YIELD * Math.pow(1 - completeness, 1.35);
             smoke[i] = clamp(smoke[i] + released * sootYield, 0, 1.5);
           }
         }
@@ -164,9 +163,6 @@
     const dvdx = (v[right] - v[left]) / (2 * H);
     const dudy = (u[down] - u[up]) / (2 * H);
     const vorticity = Math.abs(dvdx - dudy) * H;
-
-    // Some molecular/thermal mixing is always present; moving/shearing flow
-    // raises the value, so secondary-air jets can improve combustion naturally.
     return clamp(0.18 + speed / 95 + vorticity / 34, 0.18, 1);
   }
 
@@ -223,8 +219,6 @@
     secondaryIndex += (target - secondaryIndex) * Math.min(1, dt * 4);
   }
 
-  // No global smoke decay. Pollutants leave by advection through the open
-  // boundary or are consumed by secondary combustion.
   coolAndMix = function(dt) {
     for (let i = 0; i < N; i++) {
       if (solid[i]) continue;
@@ -236,8 +230,6 @@
     }
   };
 
-  // Ambient values are imposed ONLY where the solved velocity points inward.
-  // Outflowing smoke/gas is not erased merely because it touches the boundary.
   copyFluidBoundaries = function() {
     const freshen = i => {
       temperature[i] = AMBIENT_T;
@@ -279,8 +271,6 @@
     smokeOutIndex += (target - smokeOutIndex) * Math.min(1, dt * 3);
   }
 
-  // Extend the v2 physics pipeline with the two new advected scalars and the
-  // secondary-combustion reaction after advection/mixing.
   physicsStep = function(dt) {
     ensureGeometry();
     applyFireAndRadiation(dt);
@@ -335,6 +325,7 @@
   const metricsPanel = document.querySelector('.panel.metrics');
   let secondaryEl = null;
   let unburnedEl = null;
+  let smokeLevelEl = null;
   let smokeOutEl = null;
 
   if (metricsPanel) {
@@ -348,6 +339,7 @@
     };
     secondaryEl = makeCard('二次燃燒強度', 'secondaryBurnRate');
     unburnedEl = makeCard('未完全燃燒氣體', 'unburnedGasRate');
+    smokeLevelEl = makeCard('相對黑煙濃度', 'smokeLevelRate');
     smokeOutEl = makeCard('相對黑煙排出', 'smokeOutRate');
   }
 
@@ -361,29 +353,59 @@
     return count ? sum / count : 0;
   }
 
+  function averageSmokeNearFires() {
+    if (!fires.length) return averageScalar(smoke);
+    let sum = 0, count = 0;
+    const radius = 84;
+    for (const fire of fires) {
+      const fx = fire.x + BUILD_CELL / 2;
+      const fy = fire.y + BUILD_CELL / 2;
+      const gx0 = gridX(fx - radius), gx1 = gridX(fx + radius);
+      const gy0 = gridY(fy - radius), gy1 = gridY(fy + radius);
+      for (let gy = gy0; gy <= gy1; gy++) {
+        for (let gx = gx0; gx <= gx1; gx++) {
+          const i = idx(gx, gy);
+          if (solid[i]) continue;
+          const px = (gx + 0.5) * H;
+          const py = (gy + 0.5) * H;
+          if (Math.hypot(px - fx, py - fy) > radius) continue;
+          sum += smoke[i];
+          count++;
+        }
+      }
+    }
+    return count ? sum / count : 0;
+  }
+
   const baseUpdateMetrics = updateMetrics;
   updateMetrics = function() {
     baseUpdateMetrics();
+    const localSmoke = averageSmokeNearFires();
     if (secondaryEl) secondaryEl.textContent = Math.round(secondaryIndex) + ' / 100';
     if (unburnedEl) unburnedEl.textContent = Math.round(clamp(averageScalar(unburnedGas) * 100, 0, 100)) + ' / 100';
+    if (smokeLevelEl) smokeLevelEl.textContent = Math.round(clamp(localSmoke * 135, 0, 100)) + ' / 100';
     if (smokeOutEl) smokeOutEl.textContent = Math.round(smokeOutIndex) + ' / 100';
 
     if (feedbackEl && fires.length && fires.some(f => fireIntensity(f) > 0)) {
-      if (secondaryIndex >= 35 && smokeOutIndex < 35) {
-        feedbackEl.textContent = '高溫燃氣與新鮮空氣混合良好，已出現明顯二次燃燒；相對黑煙排出較低。';
+      const o2 = averageFireOxygen();
+      if (o2 < 0.35 && localSmoke > 0.08) {
+        feedbackEl.textContent = '稻稈燃燒區氧氣不足，不完全燃燒增加，黑煙正在累積。嘗試讓新鮮空氣更容易流入火源附近。';
+      } else if (secondaryIndex >= 35 && smokeOutIndex < 35) {
+        feedbackEl.textContent = '新鮮空氣帶入氧氣，高溫燃氣混合後出現明顯二次燃燒；黑煙進一步減少。';
       } else if (averageScalar(unburnedGas) > 0.12) {
-        feedbackEl.textContent = '未完全燃燒氣體正在累積。可嘗試讓外界空氣由開口進入高溫煙氣區，改善二次燃燒。';
+        feedbackEl.textContent = '稻稈釋放的可燃氣體仍有部分沒有燒完。可嘗試讓新鮮空氣進入高溫煙氣區。';
       } else {
-        feedbackEl.textContent = '觀察高溫、氧氣與氣流混合是否在火焰上方同時出現；開口位置會影響二次燃燒。';
+        feedbackEl.textContent = '藍色點只示蹤新鮮空氣流向；真正控制助燃的是同一股氣流攜帶的氧氣。觀察進氣是否讓黑煙濃度下降。';
       }
     }
   };
 
-  // Expose read-only diagnostic access for debugging/tests without making the
-  // new scalar arrays part of the student-facing API.
   window.physicsV25 = {
     get secondaryIndex() { return secondaryIndex; },
     get smokeOutIndex() { return smokeOutIndex; },
-    get averageUnburnedGas() { return averageScalar(unburnedGas); }
+    get averageUnburnedGas() { return averageScalar(unburnedGas); },
+    get averageSmoke() { return averageScalar(smoke); },
+    sampleExhaustAt(x, y) { return sampleField(exhaustGas, x, y, 0); },
+    sampleUnburnedAt(x, y) { return sampleField(unburnedGas, x, y, 0); }
   };
 })();
