@@ -1,4 +1,4 @@
-/* Physics v2.4: duct resistance + electric fan.
+/* Physics v2.4.2: duct resistance + electric fan.
  *
  * Duct resistance is based on Darcy-Weisbach in distributed form:
  *   dp/L = f/Dh * rho*V^2/2
@@ -11,8 +11,8 @@
  *   upstream ambient -> suction region -> [fan body][arrow] -> downstream jet
  *
  * The body cell owns the pressure/momentum source. The arrow cell is visual
- * direction only. Both upstream suction and downstream jet act on the velocity
- * field, never directly on tracer particles.
+ * direction only. The visual arrow is allowed to overlap walls/objects when
+ * rotating; walls still block the physical suction/jet through line-of-sight.
  */
 (() => {
   const PPM = 240;
@@ -25,7 +25,6 @@
   const FAN_VELOCITY_CAP = 165;
   const FAN_RELAX = 4.4;
 
-  // Reduced-order actuator-disk visualization/flow envelope.
   const FAN_SUCTION_LENGTH = BUILD_CELL * 4.2;
   const FAN_JET_LENGTH = BUILD_CELL * 3.2;
   const FAN_BASE_HALF_WIDTH = BUILD_CELL * 0.80;
@@ -70,16 +69,11 @@
   function fanAtEitherCell(x, y) {
     return fans.find(f => fanOccupiesCell(f, x, y));
   }
-  function footprintValid(fan, dirIndex, ignoreFan = fan) {
-    const body = {x: fan.x, y: fan.y};
-    const arrow = arrowCell(fan, dirIndex);
-    if (!cellInsideCanvas(body.x, body.y) || !cellInsideCanvas(arrow.x, arrow.y)) return false;
-    if (isWallBuildCell(body.x, body.y) || isWallBuildCell(arrow.x, arrow.y)) return false;
-    for (const other of fans) {
-      if (other === ignoreFan) continue;
-      if (fanOccupiesCell(other, body.x, body.y) || fanOccupiesCell(other, arrow.x, arrow.y)) return false;
-    }
-    return true;
+  function fanBodyPlacementValid(fan) {
+    if (!cellInsideCanvas(fan.x, fan.y)) return false;
+    if (isWallBuildCell(fan.x, fan.y)) return false;
+    // The body is a physical device, so two fan bodies cannot occupy one cell.
+    return !fans.some(other => other.x === fan.x && other.y === fan.y);
   }
   function setTransientFanMessage(text) {
     if (!feedbackEl) return;
@@ -96,14 +90,15 @@
     if (selectedTool === 'fan') {
       const existing = fanAtEitherCell(x, y);
       if (existing) {
-        const nextDir = (existing.dir + 1) % 4;
-        if (footprintValid(existing, nextDir, existing)) existing.dir = nextDir;
-        else setTransientFanMessage('這個方向的箭頭格會碰到磚牆、其他風扇或畫布邊界，無法旋轉。');
+        // Rotation is intentionally unrestricted by the VISUAL arrow footprint.
+        // The arrow may overlap a wall or another object.  Physical airflow is
+        // still blocked by lineClear() below, so this is only a UI relaxation.
+        existing.dir = (existing.dir + 1) % 4;
         return;
       }
       const candidate = {x, y, dir:0};
-      if (footprintValid(candidate, candidate.dir, null)) fans.push(candidate);
-      else setTransientFanMessage('風扇需要連續兩格空間：一格風扇本體＋一格出風箭頭。');
+      if (fanBodyPlacementValid(candidate)) fans.push(candidate);
+      else setTransientFanMessage('風扇本體不能放在磚牆、另一個風扇本體或畫布外。箭頭方向之後可自由旋轉。');
       return;
     }
     if (selectedTool === 'erase') {
@@ -190,7 +185,7 @@
         const halfWidth=FAN_BASE_HALF_WIDTH+Math.abs(axial)*spread;
         if(lateral>halfWidth) continue;
 
-        // A wall between this cell and the fan blocks both suction and jet.
+        // Visual arrows may overlap walls, but PHYSICAL flow cannot pass them.
         if(!lineClear(cx,cy,px,py,false)) continue;
 
         const axialWeight=Math.max(0.08,1-Math.abs(axial)/length);
@@ -201,8 +196,6 @@
         const desiredV=dvec.y*target*speedFactor;
         const relax=Math.min(1,FAN_RELAX*weight*dt);
 
-        // Upstream cells move in the SAME flow direction as the arrow: for a
-        // left-pointing fan, air on the right moves left toward the fan.
         u[i]+=(desiredU-u[i])*relax;
         v[i]+=(desiredV-v[i])*relax;
       }
@@ -248,7 +241,7 @@
   updateMetrics=function(){
     previousUpdateMetrics();
     if(fans.length&&feedbackEl){
-      feedbackEl.textContent+=` 電風扇 ${fans.length} 個，設定壓升 ${fanPressurePa().toFixed(1)} Pa；現在同時計算背面吸入區與箭頭方向噴流。`;
+      feedbackEl.textContent+=` 電風扇 ${fans.length} 個，設定壓升 ${fanPressurePa().toFixed(1)} Pa；箭頭可自由旋轉，磚牆仍會阻擋實際吸入與送風。`;
     }
   };
 })();
