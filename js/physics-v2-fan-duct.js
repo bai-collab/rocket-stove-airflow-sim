@@ -1,4 +1,4 @@
-/* Physics v2.3: duct resistance + electric fan.
+/* Physics v2.4: duct resistance + electric fan.
  *
  * Duct resistance is based on Darcy-Weisbach in distributed form:
  *   dp/L = f/Dh * rho*V^2/2
@@ -7,23 +7,31 @@
  * Rectangular hydraulic diameter:
  *   Dh = 2ab/(a+b)
  *
- * The electric fan is a LOCAL pressure-rise source.  The fan object has a
- * two-build-cell footprint for UI clarity:
- *   [body][arrow]  (or vertical equivalent)
- * The body cell owns the physical pressure/momentum source.  The arrow cell is
- * only a direction indicator and does not create a second fan source.
+ * The electric fan is represented as a reduced-order actuator disk:
+ *   upstream ambient -> suction region -> [fan body][arrow] -> downstream jet
+ *
+ * The body cell owns the pressure/momentum source. The arrow cell is visual
+ * direction only. Both upstream suction and downstream jet act on the velocity
+ * field, never directly on tracer particles.
  */
 (() => {
-  const PPM = 240;                 // 24 px brick module ~= 0.10 m
-  const RHO = 1.204;               // kg/m^3 near 20 C
-  const OUT_OF_PLANE_DEPTH = 0.10; // m
-  const DARCY_F = 0.045;           // rough educational duct/brick surface
+  const PPM = 240;
+  const RHO = 1.204;
+  const OUT_OF_PLANE_DEPTH = 0.10;
+  const DARCY_F = 0.045;
   const WALL_SCAN_CELLS = 8;
-  const DRAG_ACCEL_CAP = 150;      // px/s^2 numerical limit
-  const FAN_RADIUS = 42;           // px
+  const DRAG_ACCEL_CAP = 150;
   const FAN_CD = 0.62;
-  const FAN_VELOCITY_CAP = 165;    // px/s, below base solver MAX_SPEED
-  const FAN_RELAX = 3.8;           // s^-1, approach target jet speed smoothly
+  const FAN_VELOCITY_CAP = 165;
+  const FAN_RELAX = 4.4;
+
+  // Reduced-order actuator-disk visualization/flow envelope.
+  const FAN_SUCTION_LENGTH = BUILD_CELL * 4.2;
+  const FAN_JET_LENGTH = BUILD_CELL * 3.2;
+  const FAN_BASE_HALF_WIDTH = BUILD_CELL * 0.80;
+  const FAN_SUCTION_SPREAD = 0.28;
+  const FAN_JET_SPREAD = 0.18;
+  const FAN_UPSTREAM_SPEED_FACTOR = 0.72;
 
   const fans = [];
   const fanPressureEl = document.getElementById('fanPressure');
@@ -48,25 +56,20 @@
     const d = DIRS[dirIndex] || DIRS[0];
     return {x: fan.x + d.x * BUILD_CELL, y: fan.y + d.y * BUILD_CELL};
   }
-
   function cellInsideCanvas(x, y) {
     return x >= 0 && y >= 0 && x + BUILD_CELL <= canvas.width && y + BUILD_CELL <= canvas.height;
   }
-
   function isWallBuildCell(x, y) {
     return walls.some(w => w.x === x && w.y === y);
   }
-
   function fanOccupiesCell(fan, x, y, dirIndex = fan.dir) {
     if (fan.x === x && fan.y === y) return true;
     const a = arrowCell(fan, dirIndex);
     return a.x === x && a.y === y;
   }
-
   function fanAtEitherCell(x, y) {
     return fans.find(f => fanOccupiesCell(f, x, y));
   }
-
   function footprintValid(fan, dirIndex, ignoreFan = fan) {
     const body = {x: fan.x, y: fan.y};
     const arrow = arrowCell(fan, dirIndex);
@@ -78,7 +81,6 @@
     }
     return true;
   }
-
   function setTransientFanMessage(text) {
     if (!feedbackEl) return;
     const prior = feedbackEl.textContent;
@@ -88,39 +90,27 @@
     }, 1200);
   }
 
-  // Base app already sets selectedTool.  For fan, base placeAt intentionally
-  // does nothing; this listener owns fan placement and rotation.
   canvas.addEventListener('pointerdown', e => {
     const p = pointerPos(e);
     const x = snap(p.x), y = snap(p.y);
-
     if (selectedTool === 'fan') {
       const existing = fanAtEitherCell(x, y);
       if (existing) {
         const nextDir = (existing.dir + 1) % 4;
-        if (footprintValid(existing, nextDir, existing)) {
-          existing.dir = nextDir;
-        } else {
-          setTransientFanMessage('這個方向的箭頭格會碰到磚牆、其他風扇或畫布邊界，無法旋轉。');
-        }
+        if (footprintValid(existing, nextDir, existing)) existing.dir = nextDir;
+        else setTransientFanMessage('這個方向的箭頭格會碰到磚牆、其他風扇或畫布邊界，無法旋轉。');
         return;
       }
-
       const candidate = {x, y, dir:0};
-      if (footprintValid(candidate, candidate.dir, null)) {
-        fans.push(candidate);
-      } else {
-        setTransientFanMessage('風扇需要連續兩格空間：一格風扇本體＋一格出風箭頭。');
-      }
+      if (footprintValid(candidate, candidate.dir, null)) fans.push(candidate);
+      else setTransientFanMessage('風扇需要連續兩格空間：一格風扇本體＋一格出風箭頭。');
       return;
     }
-
     if (selectedTool === 'erase') {
       const i = fans.findIndex(f => fanOccupiesCell(f, x, y));
       if (i >= 0) fans.splice(i, 1);
     }
   });
-
   clearBtn.addEventListener('click', () => { fans.length = 0; });
 
   function scanWallDistance(gx,gy,dx,dy) {
@@ -131,7 +121,6 @@
     }
     return null;
   }
-
   function localHydraulicDiameter(gx,gy,horizontalFlow) {
     let aCells = null;
     if (horizontalFlow) {
@@ -141,12 +130,11 @@
       const left=scanWallDistance(gx,gy,-1,0), right=scanWallDistance(gx,gy,1,0);
       if (left!==null && right!==null) aCells = Math.max(1, left + right - 1);
     }
-    if (aCells === null) return null; // open ambient, no duct-like wall friction
+    if (aCells === null) return null;
     const a = aCells * H / PPM;
     const b = OUT_OF_PLANE_DEPTH;
     return 2 * a * b / Math.max(1e-6, a + b);
   }
-
   function applyDuctFriction(dt) {
     for (let gy=0; gy<NY; gy++) {
       for (let gx=0; gx<NX; gx++) {
@@ -159,11 +147,10 @@
         if (!dh) continue;
         const vx=sx/PPM, vy=sy/PPM, vm=Math.hypot(vx,vy);
         if (vm < 1e-4) continue;
-        let axM = -DARCY_F/(2*dh) * vm * vx;
-        let ayM = -DARCY_F/(2*dh) * vm * vy;
-        let ax=clamp(axM*PPM,-DRAG_ACCEL_CAP,DRAG_ACCEL_CAP);
-        let ay=clamp(ayM*PPM,-DRAG_ACCEL_CAP,DRAG_ACCEL_CAP);
-        u[i]+=ax*dt; v[i]+=ay*dt;
+        const axM = -DARCY_F/(2*dh) * vm * vx;
+        const ayM = -DARCY_F/(2*dh) * vm * vy;
+        u[i]+=clamp(axM*PPM,-DRAG_ACCEL_CAP,DRAG_ACCEL_CAP)*dt;
+        v[i]+=clamp(ayM*PPM,-DRAG_ACCEL_CAP,DRAG_ACCEL_CAP)*dt;
       }
     }
   }
@@ -179,32 +166,49 @@
     if (!fans.length) return;
     const target=fanTargetSpeedPx();
     if (target<=0) return;
+
     for (const fan of fans) {
       const dvec=DIRS[fan.dir]||DIRS[0];
-      // Physical source stays at the BODY cell. The second cell is UI only.
       const cx=fan.x+BUILD_CELL/2, cy=fan.y+BUILD_CELL/2;
-      const gx0=gridX(cx-FAN_RADIUS),gx1=gridX(cx+FAN_RADIUS);
-      const gy0=gridY(cy-FAN_RADIUS),gy1=gridY(cy+FAN_RADIUS);
+      const reach=Math.max(FAN_SUCTION_LENGTH,FAN_JET_LENGTH)+BUILD_CELL;
+      const gx0=gridX(cx-reach),gx1=gridX(cx+reach);
+      const gy0=gridY(cy-reach),gy1=gridY(cy+reach);
+
       for(let gy=gy0;gy<=gy1;gy++) for(let gx=gx0;gx<=gx1;gx++) {
-        const i=idx(gx,gy); if(solid[i]) continue;
+        const i=idx(gx,gy);
+        if(solid[i]) continue;
         const px=(gx+.5)*H,py=(gy+.5)*H;
-        const dx=px-cx,dy=py-cy,d=Math.hypot(dx,dy);
-        if(d>FAN_RADIUS) continue;
+        const dx=px-cx,dy=py-cy;
         const axial=dx*dvec.x+dy*dvec.y;
-        if(axial < -BUILD_CELL*.35) continue;
         const lateral=Math.abs(-dx*dvec.y+dy*dvec.x);
-        if(lateral > BUILD_CELL*.82 + Math.max(0,axial)*.18) continue;
-        const w=Math.max(.12,1-d/FAN_RADIUS);
-        const desiredU=dvec.x*target, desiredV=dvec.y*target;
-        const relax=Math.min(1,FAN_RELAX*w*dt);
+
+        const upstream=axial<0;
+        const length=upstream?FAN_SUCTION_LENGTH:FAN_JET_LENGTH;
+        if(Math.abs(axial)>length) continue;
+
+        const spread=upstream?FAN_SUCTION_SPREAD:FAN_JET_SPREAD;
+        const halfWidth=FAN_BASE_HALF_WIDTH+Math.abs(axial)*spread;
+        if(lateral>halfWidth) continue;
+
+        // A wall between this cell and the fan blocks both suction and jet.
+        if(!lineClear(cx,cy,px,py,false)) continue;
+
+        const axialWeight=Math.max(0.08,1-Math.abs(axial)/length);
+        const lateralWeight=Math.max(0,1-lateral/Math.max(1,halfWidth));
+        const weight=axialWeight*(0.35+0.65*lateralWeight);
+        const speedFactor=upstream?FAN_UPSTREAM_SPEED_FACTOR:1.0;
+        const desiredU=dvec.x*target*speedFactor;
+        const desiredV=dvec.y*target*speedFactor;
+        const relax=Math.min(1,FAN_RELAX*weight*dt);
+
+        // Upstream cells move in the SAME flow direction as the arrow: for a
+        // left-pointing fan, air on the right moves left toward the fan.
         u[i]+=(desiredU-u[i])*relax;
         v[i]+=(desiredV-v[i])*relax;
       }
     }
   }
 
-  // Loaded after stack patch: stack pressure + Boussinesq run first, then duct
-  // losses and fan momentum before velocity advection / pressure projection.
   const previousAddBuoyancy = addBuoyancy;
   addBuoyancy = function(dt) {
     previousAddBuoyancy(dt);
@@ -217,57 +221,34 @@
     ctx.save();
     ctx.fillStyle='rgba(8,145,178,.94)';
     ctx.fillRect(x+1,y+1,BUILD_CELL-2,BUILD_CELL-2);
-    ctx.strokeStyle='rgba(255,255,255,.92)';
-    ctx.lineWidth=1.8;
+    ctx.strokeStyle='rgba(255,255,255,.92)';ctx.lineWidth=1.8;
     ctx.beginPath();ctx.arc(cx,cy,BUILD_CELL*.30,0,Math.PI*2);ctx.stroke();
-    // Four simple blades; avoids relying on a tiny emoji glyph on mobile.
     ctx.fillStyle='rgba(255,255,255,.92)';
     for(let k=0;k<4;k++){
-      ctx.save();ctx.translate(cx,cy);ctx.rotate(k*Math.PI/2 + Math.PI/8);
-      ctx.beginPath();
-      ctx.moveTo(1,-1.5);ctx.quadraticCurveTo(8,-5.5,8.5,0);ctx.quadraticCurveTo(5,4,1.5,2.2);ctx.closePath();ctx.fill();
-      ctx.restore();
+      ctx.save();ctx.translate(cx,cy);ctx.rotate(k*Math.PI/2+Math.PI/8);
+      ctx.beginPath();ctx.moveTo(1,-1.5);ctx.quadraticCurveTo(8,-5.5,8.5,0);ctx.quadraticCurveTo(5,4,1.5,2.2);ctx.closePath();ctx.fill();ctx.restore();
     }
-    ctx.fillStyle='rgba(8,145,178,1)';ctx.beginPath();ctx.arc(cx,cy,2.2,0,Math.PI*2);ctx.fill();
-    ctx.restore();
+    ctx.fillStyle='rgba(8,145,178,1)';ctx.beginPath();ctx.arc(cx,cy,2.2,0,Math.PI*2);ctx.fill();ctx.restore();
   }
-
   function drawArrowCell(f) {
-    const d=DIRS[f.dir]||DIRS[0];
-    const a=arrowCell(f);
-    const cx=a.x+BUILD_CELL/2, cy=a.y+BUILD_CELL/2;
-    const pulse=(Math.sin(performance.now()/170)+1)/2;
-    const shift=(pulse-.5)*2.4;
-    ctx.save();
-    ctx.fillStyle='rgba(14,165,233,.76)';
-    ctx.fillRect(a.x+1,a.y+1,BUILD_CELL-2,BUILD_CELL-2);
-    ctx.translate(cx+d.x*shift,cy+d.y*shift);
-    ctx.rotate(Math.atan2(d.y,d.x));
-    ctx.strokeStyle='#fff';
-    ctx.fillStyle='#fff';
-    ctx.lineWidth=3.4;
-    ctx.lineCap='round';
-    // Large shaft + triangular head fills most of the second cell.
+    const d=DIRS[f.dir]||DIRS[0],a=arrowCell(f);
+    const cx=a.x+BUILD_CELL/2,cy=a.y+BUILD_CELL/2;
+    const pulse=(Math.sin(performance.now()/170)+1)/2,shift=(pulse-.5)*2.4;
+    ctx.save();ctx.fillStyle='rgba(14,165,233,.76)';ctx.fillRect(a.x+1,a.y+1,BUILD_CELL-2,BUILD_CELL-2);
+    ctx.translate(cx+d.x*shift,cy+d.y*shift);ctx.rotate(Math.atan2(d.y,d.x));
+    ctx.strokeStyle='#fff';ctx.fillStyle='#fff';ctx.lineWidth=3.4;ctx.lineCap='round';
     ctx.beginPath();ctx.moveTo(-8,0);ctx.lineTo(4,0);ctx.stroke();
-    ctx.beginPath();ctx.moveTo(3,-6.2);ctx.lineTo(9,0);ctx.lineTo(3,6.2);ctx.closePath();ctx.fill();
-    ctx.restore();
+    ctx.beginPath();ctx.moveTo(3,-6.2);ctx.lineTo(9,0);ctx.lineTo(3,6.2);ctx.closePath();ctx.fill();ctx.restore();
   }
-
-  function drawFans() {
-    for(const f of fans){
-      drawFanBody(f);
-      drawArrowCell(f);
-    }
-  }
-
+  function drawFans() { for(const f of fans){drawFanBody(f);drawArrowCell(f);} }
   const previousDraw=draw;
   draw=function(){previousDraw();drawFans();};
 
   const previousUpdateMetrics=updateMetrics;
   updateMetrics=function(){
     previousUpdateMetrics();
-    if(fans.length && feedbackEl){
-      feedbackEl.textContent += ` 電風扇 ${fans.length} 個，設定壓升 ${fanPressurePa().toFixed(1)} Pa；風扇採兩格顯示，本體＋大箭頭，再點任一格可旋轉。`;
+    if(fans.length&&feedbackEl){
+      feedbackEl.textContent+=` 電風扇 ${fans.length} 個，設定壓升 ${fanPressurePa().toFixed(1)} Pa；現在同時計算背面吸入區與箭頭方向噴流。`;
     }
   };
 })();
