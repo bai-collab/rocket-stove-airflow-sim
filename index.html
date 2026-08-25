@@ -8,13 +8,13 @@
 </head>
 <body>
   <main class="app-shell">
-    <header class="topbar"><div><h1>火箭爐空氣流動模擬器</h1><p>設計 → 點火 → 觀察 → 修改 → 再測試</p></div><div class="notice">Physics v2.4.2 教學用近似模型，不代表工程 CFD 結果</div></header>
+    <header class="topbar"><div><h1>火箭爐空氣流動模擬器</h1><p>設計 → 點火 → 觀察 → 修改 → 再測試</p></div><div class="notice">Physics v2.4.3 教學用近似模型，不代表工程 CFD 結果</div></header>
     <section class="workspace">
       <aside class="panel tools"><h2>1. 建造火箭爐</h2><div class="tool-grid" role="group" aria-label="建造工具"><button class="tool active" data-tool="wall">磚塊／爐壁</button><button class="tool" data-tool="inlet">進氣口標記</button><button class="tool" data-tool="fire">火源</button><button class="tool" data-tool="chimney">煙囪標記</button><button class="tool" data-tool="fan">電風扇</button><button class="tool" data-tool="erase">橡皮擦</button></div><h2>2. 測試</h2><div class="action-stack"><button id="igniteBtn" class="primary">🔥 點火</button><button id="pauseBtn">暫停</button><button id="clearBtn">全部清除</button></div><label class="range-label" for="particleCount">示蹤粒子數</label><input id="particleCount" type="range" min="80" max="500" step="20" value="240" /><label class="range-label" for="fanPressure">風扇壓升 <output id="fanPressureValue">2.0 Pa</output></label><input id="fanPressure" type="range" min="0" max="5" step="0.5" value="2" /><div class="legend"><span><i class="dot air"></i> 冷／新鮮空氣示蹤</span><span><i class="dot heat"></i> 受熱空氣示蹤</span><span><i class="dot exhaust"></i> 燃燒後氣體示蹤</span><span><i class="box wall"></i> 磚牆</span></div></aside>
-      <section class="simulation-card"><canvas id="simCanvas" width="900" height="560" aria-label="火箭爐氣流模擬畫布"></canvas><p class="hint">Physics v2.4.2：背景使用分級溫度熱圖；火源顯示維持原樣。電風扇箭頭可自由旋轉，即使視覺箭頭碰到磚牆也不限制；實際氣流仍會被磚牆阻擋。</p></section>
-      <aside class="panel metrics"><h2>3. 觀察結果</h2><div class="metric-card"><span>氣流順暢度</span><strong id="flowScore">—</strong></div><div class="metric-card"><span>平均氣流速度</span><strong id="avgSpeed">—</strong></div><div class="metric-card"><span>停滯流場比例</span><strong id="stagnantRate">—</strong></div><div class="metric-card"><span>燃燒區相對氧氣</span><strong id="oxygenRate">—</strong></div><div id="feedback" class="feedback">Physics v2.4.2 已載入：浮力、stack pressure、通道摩擦、風扇吸入／送風、質量連續方程式與溫度熱圖共同呈現。</div></aside>
+      <section class="simulation-card"><canvas id="simCanvas" width="900" height="560" aria-label="火箭爐氣流模擬畫布"></canvas><p class="hint">Physics v2.4.3：背景使用分級溫度熱圖；示蹤粒子流出畫布後只從真正的進氣邊界重新進入，避免長時間模擬後粒子都卡在出風邊界而看似消失。</p></section>
+      <aside class="panel metrics"><h2>3. 觀察結果</h2><div class="metric-card"><span>氣流順暢度</span><strong id="flowScore">—</strong></div><div class="metric-card"><span>平均氣流速度</span><strong id="avgSpeed">—</strong></div><div class="metric-card"><span>停滯流場比例</span><strong id="stagnantRate">—</strong></div><div class="metric-card"><span>燃燒區相對氧氣</span><strong id="oxygenRate">—</strong></div><div id="feedback" class="feedback">Physics v2.4.3 已載入：物理流場不變，示蹤粒子回收改依真正的邊界進流方向。</div></aside>
     </section>
-    <section class="teacher-note"><h2>學生觀察重點</h2><ul><li>背景色由黃、橘、紅到深紅／紫時，是否能看出不同區域的加熱程度？</li><li>相同流量下，通道截面縮小時，局部流速是否提高？</li><li>風扇改變方向後，磚牆是否只阻擋實際氣流，而不限制箭頭旋轉？</li><li>煙道越高、熱空氣越熱時，自然抽力是否更明顯？</li></ul></section>
+    <section class="teacher-note"><h2>學生觀察重點</h2><ul><li>背景色由黃、橘、紅到深紅／紫時，是否能看出不同區域的加熱程度？</li><li>示蹤粒子流出煙囪或畫布後，是否從外界實際進氣方向重新出現？</li><li>相同流量下，通道截面縮小時，局部流速是否提高？</li><li>風扇背面空氣是否先被吸入，再沿箭頭方向送出？</li></ul></section>
   </main>
   <script src="js/app-v2.js?v=20260825-1"></script>
   <script src="js/physics-v2-plume-fix.js?v=20260825-2"></script>
@@ -22,5 +22,6 @@
   <script src="js/physics-v2-fan-duct.js?v=20260825-8"></script>
   <script src="js/physics-v2-continuity.js?v=20260825-6"></script>
   <script src="js/physics-v2-temperature-heatmap.js?v=20260825-1"></script>
+  <script src="js/physics-v2-tracer-recycle.js?v=20260825-1"></script>
 </body>
 </html>
