@@ -15,6 +15,7 @@ let drawing = false;
 let running = false;
 let ignited = false;
 let lastTime = performance.now();
+let emissionAccumulator = 0;
 
 const walls = [];
 const inlets = [];
@@ -23,6 +24,7 @@ const chimneys = [];
 let particles = [];
 
 const CELL = 24;
+const PARTICLE_LIFETIME = 18;
 
 function pointerPos(evt) {
   const r = canvas.getBoundingClientRect();
@@ -77,12 +79,41 @@ function spawnParticle() {
     x = inlet.x + CELL * 0.5;
     y = inlet.y + CELL * 0.5 + (Math.random() - .5) * CELL * .6;
   }
-  return {x, y, vx: 18 + Math.random() * 10, vy:(Math.random()-.5)*5, age:0, heated:false, stagnant:0};
+  return {
+    x,
+    y,
+    vx: 18 + Math.random() * 10,
+    vy: (Math.random() - .5) * 5,
+    age: 0,
+    heated: false,
+    stagnant: 0
+  };
 }
 
-function resetParticles() {
-  const count = Number(particleSlider.value);
-  particles = Array.from({length: count}, spawnParticle);
+function targetParticleCount() {
+  return Math.max(10, Number(particleSlider.value) || 80);
+}
+
+function seedParticles() {
+  const initial = Math.min(24, targetParticleCount());
+  particles = Array.from({length: initial}, spawnParticle);
+  emissionAccumulator = 0;
+}
+
+function emitParticles(dt) {
+  const target = targetParticleCount();
+  if (particles.length >= target) return;
+
+  // Continuous source: higher slider values also increase emission density.
+  const emissionRate = Math.max(10, target * 0.32); // particles / second
+  emissionAccumulator += dt * emissionRate;
+
+  let toEmit = Math.floor(emissionAccumulator);
+  if (toEmit <= 0) return;
+  emissionAccumulator -= toEmit;
+  toEmit = Math.min(toEmit, target - particles.length);
+
+  for (let i = 0; i < toEmit; i++) particles.push(spawnParticle());
 }
 
 function nearestForce(p, sources, radius, strength, upwardOnly=false) {
@@ -106,7 +137,8 @@ function updateParticle(p, dt) {
 
   if (inlets.length) {
     const f = nearestForce(p, inlets, 140, 18);
-    ax += f.fx * .15; ay += f.fy * .15;
+    ax += f.fx * .15;
+    ay += f.fy * .15;
   }
 
   if (ignited && fires.length) {
@@ -123,7 +155,8 @@ function updateParticle(p, dt) {
 
   if (ignited && chimneys.length) {
     const f = nearestForce(p, chimneys, 190, 26);
-    ax += f.fx; ay += f.fy - 10;
+    ax += f.fx;
+    ay += f.fy - 10;
   }
 
   if (p.heated) ay -= 10;
@@ -132,36 +165,56 @@ function updateParticle(p, dt) {
   p.vy += ay * dt;
   const speed = Math.hypot(p.vx,p.vy);
   const maxSpeed = 115;
-  if (speed > maxSpeed) { p.vx = p.vx/speed*maxSpeed; p.vy = p.vy/speed*maxSpeed; }
+  if (speed > maxSpeed) {
+    p.vx = p.vx/speed*maxSpeed;
+    p.vy = p.vy/speed*maxSpeed;
+  }
 
   const nx = p.x + p.vx * dt;
   const ny = p.y + p.vy * dt;
 
-  if (blocked(nx, p.y)) p.vx *= -0.35; else p.x = nx;
-  if (blocked(p.x, ny)) p.vy *= -0.35; else p.y = ny;
+  if (blocked(nx, p.y)) p.vx *= -0.35;
+  else p.x = nx;
+
+  if (blocked(p.x, ny)) p.vy *= -0.35;
+  else p.y = ny;
 
   const s2 = Math.hypot(p.vx,p.vy);
-  if (s2 < 8) p.stagnant += dt; else p.stagnant = Math.max(0,p.stagnant-dt*.5);
+  if (s2 < 8) p.stagnant += dt;
+  else p.stagnant = Math.max(0,p.stagnant-dt*.5);
 
-  if (p.x < -20 || p.x > canvas.width+20 || p.y < -30 || p.y > canvas.height+30 || p.age > 18) {
-    Object.assign(p, spawnParticle());
-  }
+  return !(
+    p.x < -20 ||
+    p.x > canvas.width + 20 ||
+    p.y < -30 ||
+    p.y > canvas.height + 30 ||
+    p.age > PARTICLE_LIFETIME
+  );
 }
 
 function drawGrid() {
   ctx.strokeStyle = 'rgba(148,163,184,.16)';
   ctx.lineWidth = 1;
-  for (let x=0; x<canvas.width; x+=CELL) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
-  for (let y=0; y<canvas.height; y+=CELL) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
+  for (let x=0; x<canvas.width; x+=CELL) {
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke();
+  }
+  for (let y=0; y<canvas.height; y+=CELL) {
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke();
+  }
 }
 
 function drawCells(arr, fill, label) {
   ctx.fillStyle = fill;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
   ctx.font = '16px system-ui';
   for (const o of arr) {
     ctx.fillRect(o.x+1,o.y+1,CELL-2,CELL-2);
-    if (label) { ctx.fillStyle = '#fff'; ctx.fillText(label,o.x+CELL/2,o.y+CELL/2); ctx.fillStyle = fill; }
+    if (label) {
+      ctx.fillStyle = '#fff';
+      ctx.fillText(label,o.x+CELL/2,o.y+CELL/2);
+      ctx.fillStyle = fill;
+    }
   }
 }
 
@@ -206,32 +259,50 @@ function updateMetrics() {
 function loop(now) {
   const dt = Math.min(.033,(now-lastTime)/1000);
   lastTime = now;
+
   if (running) {
-    particles.forEach(p=>updateParticle(p,dt));
+    emitParticles(dt);
+    particles = particles.filter(p => updateParticle(p,dt));
     updateMetrics();
   }
+
   draw();
   requestAnimationFrame(loop);
 }
 
 igniteBtn.addEventListener('click',()=>{
-  ignited = true; running = true; resetParticles();
+  ignited = true;
+  running = true;
+  seedParticles();
   igniteBtn.textContent = '🔥 已點火';
+  pauseBtn.textContent = '暫停';
   feedbackEl.textContent = '正在觀察點火後的氣流變化。';
 });
+
 pauseBtn.addEventListener('click',()=>{
   running = !running;
+  if (running && particles.length === 0) seedParticles();
+  emissionAccumulator = 0;
+  lastTime = performance.now();
   pauseBtn.textContent = running ? '暫停' : '繼續';
 });
+
 clearBtn.addEventListener('click',()=>{
   walls.length = inlets.length = fires.length = chimneys.length = 0;
-  particles = []; running = false; ignited = false;
-  igniteBtn.textContent = '🔥 點火'; pauseBtn.textContent = '暫停';
+  particles = [];
+  running = false;
+  ignited = false;
+  emissionAccumulator = 0;
+  igniteBtn.textContent = '🔥 點火';
+  pauseBtn.textContent = '暫停';
   flowScoreEl.textContent = avgSpeedEl.textContent = stagnantRateEl.textContent = '—';
   feedbackEl.textContent = '先設計火箭爐，再按「點火」。';
 });
-particleSlider.addEventListener('input',()=>{ if (running) resetParticles(); });
 
-resetParticles();
-particles = [];
+particleSlider.addEventListener('input',()=>{
+  const target = targetParticleCount();
+  if (particles.length > target) particles.length = target;
+  if (running && particles.length === 0) seedParticles();
+});
+
 requestAnimationFrame(loop);
