@@ -8,16 +8,17 @@
 </head>
 <body>
   <main class="app-shell">
-    <header class="topbar"><div><h1>火箭爐空氣流動模擬器</h1><p>設計 → 點火 → 觀察 → 修改 → 再測試</p></div><div class="notice">Physics v2.2 教學用近似模型，不代表工程 CFD 結果</div></header>
+    <header class="topbar"><div><h1>火箭爐空氣流動模擬器</h1><p>設計 → 點火 → 觀察 → 修改 → 再測試</p></div><div class="notice">Physics v2.3 教學用近似模型，不代表工程 CFD 結果</div></header>
     <section class="workspace">
-      <aside class="panel tools"><h2>1. 建造火箭爐</h2><div class="tool-grid" role="group" aria-label="建造工具"><button class="tool active" data-tool="wall">磚塊／爐壁</button><button class="tool" data-tool="inlet">進氣口標記</button><button class="tool" data-tool="fire">火源</button><button class="tool" data-tool="chimney">煙囪標記</button><button class="tool" data-tool="erase">橡皮擦</button></div><h2>2. 測試</h2><div class="action-stack"><button id="igniteBtn" class="primary">🔥 點火</button><button id="pauseBtn">暫停</button><button id="clearBtn">全部清除</button></div><label class="range-label" for="particleCount">示蹤粒子數</label><input id="particleCount" type="range" min="80" max="500" step="20" value="240" /><div class="legend"><span><i class="dot air"></i> 冷／新鮮空氣示蹤</span><span><i class="dot heat"></i> 受熱空氣示蹤</span><span><i class="dot exhaust"></i> 燃燒後氣體示蹤</span><span><i class="box wall"></i> 磚牆</span></div></aside>
-      <section class="simulation-card"><canvas id="simCanvas" width="900" height="560" aria-label="火箭爐氣流模擬畫布"></canvas><p class="hint">Physics v2.2：熱羽流產生浮力，並依煙道高度與溫差形成 stack pressure；壓力場會沿實際開放通道帶入冷空氣。粒子只顯示流向，不代表空氣總量。</p></section>
-      <aside class="panel metrics"><h2>3. 觀察結果</h2><div class="metric-card"><span>氣流順暢度</span><strong id="flowScore">—</strong></div><div class="metric-card"><span>平均氣流速度</span><strong id="avgSpeed">—</strong></div><div class="metric-card"><span>停滯流場比例</span><strong id="stagnantRate">—</strong></div><div class="metric-card"><span>燃燒區相對氧氣</span><strong id="oxygenRate">—</strong></div><div id="feedback" class="feedback">Physics v2.2 已載入：空氣由溫度、浮力、stack pressure 與不可壓縮壓力場共同決定。</div></aside>
+      <aside class="panel tools"><h2>1. 建造火箭爐</h2><div class="tool-grid" role="group" aria-label="建造工具"><button class="tool active" data-tool="wall">磚塊／爐壁</button><button class="tool" data-tool="inlet">進氣口標記</button><button class="tool" data-tool="fire">火源</button><button class="tool" data-tool="chimney">煙囪標記</button><button class="tool" data-tool="fan">電風扇</button><button class="tool" data-tool="erase">橡皮擦</button></div><h2>2. 測試</h2><div class="action-stack"><button id="igniteBtn" class="primary">🔥 點火</button><button id="pauseBtn">暫停</button><button id="clearBtn">全部清除</button></div><label class="range-label" for="particleCount">示蹤粒子數</label><input id="particleCount" type="range" min="80" max="500" step="20" value="240" /><label class="range-label" for="fanPressure">風扇壓升 <output id="fanPressureValue">2.0 Pa</output></label><input id="fanPressure" type="range" min="0" max="5" step="0.5" value="2" /><div class="legend"><span><i class="dot air"></i> 冷／新鮮空氣示蹤</span><span><i class="dot heat"></i> 受熱空氣示蹤</span><span><i class="dot exhaust"></i> 燃燒後氣體示蹤</span><span><i class="box wall"></i> 磚牆</span></div></aside>
+      <section class="simulation-card"><canvas id="simCanvas" width="900" height="560" aria-label="火箭爐氣流模擬畫布"></canvas><p class="hint">Physics v2.3：煙道溫差與高度形成 stack pressure；長、窄進氣道會累積較大的 Darcy 型摩擦阻力。電風扇提供額外壓升；放置後再點同一格可旋轉方向。粒子只顯示流向。</p></section>
+      <aside class="panel metrics"><h2>3. 觀察結果</h2><div class="metric-card"><span>氣流順暢度</span><strong id="flowScore">—</strong></div><div class="metric-card"><span>平均氣流速度</span><strong id="avgSpeed">—</strong></div><div class="metric-card"><span>停滯流場比例</span><strong id="stagnantRate">—</strong></div><div class="metric-card"><span>燃燒區相對氧氣</span><strong id="oxygenRate">—</strong></div><div id="feedback" class="feedback">Physics v2.3 已載入：自然抽力、通道摩擦與風扇強制送風會共同影響氣流。</div></aside>
     </section>
-    <section class="teacher-note"><h2>學生觀察重點</h2><ul><li>煙道越高、熱空氣越熱時，進氣是否更明顯？</li><li>冷空氣是否沿真正開放的通道進入燃燒區，而不是穿牆？</li><li>磚牆擋住直火後，牆後空氣是否由磚頭導熱後才升溫？</li><li>完全封閉時，氧氣是否逐漸下降並使火源熄滅？</li></ul></section>
+    <section class="teacher-note"><h2>學生觀察重點</h2><ul><li>相同開口寬度下，進氣道變長後，進氣是否變慢？</li><li>相同長度下，較窄的進氣道是否有較大的流動阻力？</li><li>加入電風扇後，是否能克服部分進氣阻力，把冷空氣送進燃燒區？</li><li>煙道越高、熱空氣越熱時，自然抽力是否更明顯？</li></ul></section>
   </main>
   <script src="js/app-v2.js?v=20260825-1"></script>
   <script src="js/physics-v2-plume-fix.js?v=20260825-2"></script>
   <script src="js/physics-v2-stack-flow.js?v=20260825-3"></script>
+  <script src="js/physics-v2-fan-duct.js?v=20260825-4"></script>
 </body>
 </html>
