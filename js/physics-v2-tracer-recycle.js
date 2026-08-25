@@ -1,24 +1,22 @@
-/* Physics v2.4.3: robust tracer recycling at open boundaries.
+/* Physics v2.4.4: robust tracer recycling + persistent exhaust tracers.
  *
  * Tracers are visualization only. The fluid solver is NOT changed here.
  *
- * Problem fixed:
- * The base v2 tracer recycler used a relatively high inflow threshold and then
- * fell back to a random boundary. During a strong hot plume, a tracer could be
- * recycled onto an outflow boundary and immediately leave again, so over time
- * most visible tracers could appear to vanish at the edges.
- *
- * This patch:
- * 1) detects even weak inward boundary flow;
- * 2) chooses inflow locations weighted by inward speed;
- * 3) avoids repeatedly recycling a tracer onto an outflow boundary;
- * 4) preserves the requested tracer count exactly.
+ * Rules:
+ * 1) Tracers recycle only through solved/open boundary inflow locations.
+ * 2) Requested tracer count is preserved exactly.
+ * 3) Once a tracer enters combustion products (smoke scalar above threshold),
+ *    it becomes an exhaust tracer and stays gray even after it leaves the
+ *    locally smoky cell.
+ * 4) An exhaust tracer returns to fresh/blue ONLY after it actually exits the
+ *    canvas and is reintroduced from an external inflow boundary.
  */
 (() => {
   const MIN_INFLOW = 0.03;      // px/s; visual detection threshold only
   const EDGE_INSET = 2.5;       // px inside canvas
   const EDGE_BAND = 5;          // px
-  const EDGE_STUCK_TIME = 0.45; // s before recycling a boundary-cycling tracer
+  const EDGE_STUCK_TIME = 0.45; // s; applies only to fresh tracers
+  const EXHAUST_SMOKE_THRESHOLD = 0.08;
 
   function inflowCandidates() {
     const c = [];
@@ -67,8 +65,6 @@
   }
 
   function weakestOutflowBoundaryPoint() {
-    // Only used when the solved field has essentially no inward boundary cell.
-    // Choose the most neutral/open edge instead of a random strong outflow.
     let best = null;
     const consider = (x,y,outward) => {
       if (isSolidPoint(x,y)) return;
@@ -97,21 +93,45 @@
            p.x > canvas.width-EDGE_BAND || p.y > canvas.height-EDGE_BAND;
   }
 
+  function markCombustionProduct(p) {
+    if (p.exhaust) return;
+    const localSmoke = sampleField(smoke, p.x, p.y, 0);
+    if (localSmoke >= EXHAUST_SMOKE_THRESHOLD) p.exhaust = true;
+  }
+
+  function resetAtExternalInflow(p) {
+    const q = boundarySpawnForFlow();
+    p.x = q.x;
+    p.y = q.y;
+    p.vx = 0;
+    p.vy = 0;
+    p.edgeAge = 0;
+    // Only a true canvas exit represents leaving the system and being replaced
+    // by fresh ambient air.
+    p.exhaust = false;
+  }
+
   updateTracers = function(dt) {
     const target = targetParticleCount();
 
-    // Keep the visualization count exact. New visual tracers are introduced
-    // only at an outer boundary when the user raises the tracer slider.
     if (particles.length > target) particles.length = target;
     while (particles.length < target) {
       const q = ignited ? boundarySpawnForFlow() : randomOpenPoint();
       const p = makeTracer(q);
       p.edgeAge = 0;
+      p.exhaust = false;
       particles.push(p);
     }
 
     for (const p of particles) {
       if (p.edgeAge == null) p.edgeAge = 0;
+      if (p.exhaust == null) p.exhaust = false;
+
+      // Capture combustion-product identity before movement, then again after
+      // movement so a tracer crossing the reaction plume during this step is
+      // marked immediately.
+      markCombustionProduct(p);
+
       const vel = sampleVelocity(p.x,p.y);
       p.vx = Number.isFinite(vel.x) ? vel.x : 0;
       p.vy = Number.isFinite(vel.y) ? vel.y : 0;
@@ -119,27 +139,57 @@
       const ny = p.y + p.vy*dt;
 
       if (!Number.isFinite(nx) || !Number.isFinite(ny) || !inCanvas(nx,ny)) {
-        const q = boundarySpawnForFlow();
-        p.x=q.x; p.y=q.y; p.vx=0; p.vy=0; p.edgeAge=0;
+        resetAtExternalInflow(p);
         continue;
       }
 
       if (isSolidPoint(nx,ny)) {
         if (!isSolidPoint(nx,p.y)) p.x=nx;
         if (!isSolidPoint(p.x,ny)) p.y=ny;
-        p.vx=0; p.vy=0;
+        p.vx=0;
+        p.vy=0;
       } else {
-        p.x=nx; p.y=ny;
+        p.x=nx;
+        p.y=ny;
       }
 
-      // A tracer repeatedly sitting on an edge usually means it was recycled
-      // onto an outflow/near-neutral cell. Recycle it to a solved inflow edge.
-      if (nearEdge(p)) p.edgeAge += dt;
-      else p.edgeAge = 0;
-      if (p.edgeAge > EDGE_STUCK_TIME) {
-        const q=boundarySpawnForFlow();
-        p.x=q.x; p.y=q.y; p.vx=0; p.vy=0; p.edgeAge=0;
+      markCombustionProduct(p);
+
+      // Fresh tracers may be visually recycled if they repeatedly sit on a
+      // neutral/outflow edge. Exhaust tracers are NEVER recycled while still
+      // inside the canvas: they remain gray until they truly leave the canvas.
+      if (p.exhaust) {
+        p.edgeAge = 0;
+      } else {
+        if (nearEdge(p)) p.edgeAge += dt;
+        else p.edgeAge = 0;
+        if (p.edgeAge > EDGE_STUCK_TIME) {
+          const q=boundarySpawnForFlow();
+          p.x=q.x; p.y=q.y; p.vx=0; p.vy=0; p.edgeAge=0;
+        }
       }
+    }
+  };
+
+  // Persistent tracer color state: exhaust identity belongs to the tracer,
+  // rather than being re-decided from the current cell every frame.
+  drawTracers = function() {
+    for (const p of particles) {
+      const t = sampleField(temperature, p.x, p.y, AMBIENT_T);
+      const localSmoke = sampleField(smoke, p.x, p.y, 0);
+      const speed = Math.hypot(p.vx, p.vy);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, clamp(1.8 + speed / 90, 1.8, 4.2), 0, Math.PI * 2);
+
+      if (p.exhaust) {
+        const alpha = clamp(0.72 + localSmoke * 0.20, 0.72, 0.92);
+        ctx.fillStyle = `rgba(75,85,99,${alpha})`;
+      } else if (t > 40) {
+        ctx.fillStyle = 'rgba(234,88,12,.72)';
+      } else {
+        ctx.fillStyle = 'rgba(37,99,235,.52)';
+      }
+      ctx.fill();
     }
   };
 })();
