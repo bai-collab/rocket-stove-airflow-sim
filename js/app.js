@@ -15,6 +15,7 @@ let drawing = false;
 let running = false;
 let ignited = false;
 let lastTime = performance.now();
+let densityTimer = 0;
 
 const walls = [];
 const inlets = [];
@@ -23,7 +24,8 @@ const chimneys = [];
 let particles = [];
 
 const CELL = 24;
-const MAX_SPEED = 120;
+const MAX_SPEED = 125;
+const DENSITY_CELL = 90;
 
 function pointerPos(evt) {
   const r = canvas.getBoundingClientRect();
@@ -78,7 +80,7 @@ function targetParticleCount() {
 }
 
 function randomOpenPoint() {
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 100; i++) {
     const x = 8 + Math.random() * (canvas.width - 16);
     const y = 8 + Math.random() * (canvas.height - 16);
     if (!blocked(x, y)) return {x, y};
@@ -90,8 +92,8 @@ function makeAmbientParticle(point = randomOpenPoint()) {
   return {
     x: point.x,
     y: point.y,
-    vx: (Math.random() - .5) * 0.5,
-    vy: (Math.random() - .5) * 0.5,
+    vx: (Math.random() - .5) * 0.4,
+    vy: (Math.random() - .5) * 0.4,
     heated: false,
     stagnant: 0
   };
@@ -102,15 +104,10 @@ function seedAmbientAir() {
 }
 
 function respawnFromSurroundings(p) {
-  const edge = Math.floor(Math.random() * 4);
-  let point;
-  if (edge === 0) point = {x: 3, y: Math.random() * canvas.height};
-  else if (edge === 1) point = {x: canvas.width - 3, y: Math.random() * canvas.height};
-  else if (edge === 2) point = {x: Math.random() * canvas.width, y: 3};
-  else point = {x: Math.random() * canvas.width, y: canvas.height - 3};
-
-  if (blocked(point.x, point.y)) point = randomOpenPoint();
-  Object.assign(p, makeAmbientParticle(point));
+  // Tracers represent visible markers in an already air-filled space.
+  // When one leaves the viewport, place it back in the ambient field rather
+  // than forcing it to travel all the way in from a single edge.
+  Object.assign(p, makeAmbientParticle(randomOpenPoint()));
 }
 
 function forceToward(p, sources, radius, strength) {
@@ -138,33 +135,31 @@ function fireCirculationForce(p) {
     const dy = p.y - cy;
     const dist = Math.hypot(dx, dy) || 1;
 
-    // 1) Surrounding ambient air is drawn toward the combustion zone.
-    const intakeRadius = 320;
+    // Surrounding air is drawn toward the combustion region over a wide area.
+    const intakeRadius = 460;
     if (dist < intakeRadius) {
-      const k = (1 - dist / intakeRadius);
-      fx += (-dx / dist) * 18 * k;
-      fy += (-dy / dist) * 10 * k;
+      const k = 1 - dist / intakeRadius;
+      fx += (-dx / dist) * 30 * k;
+      fy += (-dy / dist) * 16 * k;
     }
 
-    // 2) Above the fire, create a broad rising plume.
-    // Wider influence makes the circulation visible to students.
-    if (p.y < cy + 40) {
+    // Broad rising plume above the flame.
+    if (p.y < cy + 55) {
       const verticalDistance = Math.max(0, cy - p.y);
-      const plumeWidth = 70 + verticalDistance * 0.28;
+      const plumeWidth = 85 + verticalDistance * 0.34;
       const horizontal = Math.abs(p.x - cx);
       if (horizontal < plumeWidth) {
         const centerFactor = 1 - horizontal / plumeWidth;
-        const heightFactor = Math.max(0.25, 1 - verticalDistance / 520);
-        fy -= 46 * centerFactor * heightFactor;
-        fx += (cx - p.x) * 0.018 * centerFactor;
+        const heightFactor = Math.max(0.28, 1 - verticalDistance / 560);
+        fy -= 52 * centerFactor * heightFactor;
+        fx += (cx - p.x) * 0.022 * centerFactor;
       }
     }
 
-    // 3) Very near the flame, mark air as heated and strengthen buoyancy.
-    if (dist < 120) {
+    if (dist < 135) {
       p.heated = true;
-      const k = 1 - dist / 120;
-      fy -= 42 * k;
+      const k = 1 - dist / 135;
+      fy -= 48 * k;
     }
   }
 
@@ -173,21 +168,75 @@ function fireCirculationForce(p) {
 
 function entrainmentForce(p) {
   let fx = 0, fy = 0, count = 0;
-  const radius = 85;
+  const radius = 105;
   for (const q of particles) {
     if (q === p) continue;
     const dx = q.x - p.x, dy = q.y - p.y;
     const d2 = dx*dx + dy*dy;
     if (d2 > 0 && d2 < radius*radius) {
       const d = Math.sqrt(d2);
-      const influence = (1 - d/radius) * 0.085;
+      const influence = (1 - d/radius) * 0.11;
       fx += (q.vx - p.vx) * influence;
       fy += (q.vy - p.vy) * influence;
       count++;
-      if (count >= 18) break;
+      if (count >= 22) break;
     }
   }
   return {fx, fy};
+}
+
+function redistributeSparseTracers() {
+  if (!ignited || particles.length < 20) return;
+
+  const cols = Math.ceil(canvas.width / DENSITY_CELL);
+  const rows = Math.ceil(canvas.height / DENSITY_CELL);
+  const counts = Array(cols * rows).fill(0);
+
+  for (const p of particles) {
+    if (p.x < 0 || p.x >= canvas.width || p.y < 0 || p.y >= canvas.height) continue;
+    const cx = Math.min(cols - 1, Math.floor(p.x / DENSITY_CELL));
+    const cy = Math.min(rows - 1, Math.floor(p.y / DENSITY_CELL));
+    counts[cy * cols + cx]++;
+  }
+
+  const expected = particles.length / (cols * rows);
+  const sparseThreshold = Math.max(1, expected * 0.28);
+  const denseThreshold = Math.max(3, expected * 1.9);
+  const sparseCells = [];
+
+  for (let cy = 0; cy < rows; cy++) {
+    for (let cx = 0; cx < cols; cx++) {
+      if (counts[cy * cols + cx] <= sparseThreshold) sparseCells.push({cx, cy});
+    }
+  }
+
+  if (!sparseCells.length) return;
+
+  // Move only a few tracers per pass so the redistribution is not visually abrupt.
+  let moved = 0;
+  const maxMoves = Math.max(2, Math.round(particles.length * 0.018));
+
+  for (const p of particles) {
+    if (moved >= maxMoves || !sparseCells.length) break;
+    const cx = Math.min(cols - 1, Math.max(0, Math.floor(p.x / DENSITY_CELL)));
+    const cy = Math.min(rows - 1, Math.max(0, Math.floor(p.y / DENSITY_CELL)));
+    if (counts[cy * cols + cx] < denseThreshold) continue;
+
+    const target = sparseCells.splice(Math.floor(Math.random() * sparseCells.length), 1)[0];
+    let point = null;
+    for (let tries = 0; tries < 20; tries++) {
+      const x = target.cx * DENSITY_CELL + Math.random() * DENSITY_CELL;
+      const y = target.cy * DENSITY_CELL + Math.random() * DENSITY_CELL;
+      if (x < canvas.width && y < canvas.height && !blocked(x, y)) {
+        point = {x, y};
+        break;
+      }
+    }
+    if (!point) continue;
+
+    Object.assign(p, makeAmbientParticle(point));
+    moved++;
+  }
 }
 
 function updateParticle(p, dt) {
@@ -199,17 +248,16 @@ function updateParticle(p, dt) {
     ay += f.fy;
   }
 
-  // Inlets are low-resistance openings, not particle emitters.
   if (ignited && inlets.length) {
-    const f = forceToward(p, inlets, 190, 8);
+    const f = forceToward(p, inlets, 230, 10);
     ax += f.fx;
     ay += f.fy;
   }
 
   if (ignited && chimneys.length) {
-    const f = forceToward(p, chimneys, 260, 24);
+    const f = forceToward(p, chimneys, 290, 26);
     ax += f.fx;
-    ay += f.fy - 14;
+    ay += f.fy - 15;
   }
 
   if (ignited) {
@@ -218,9 +266,8 @@ function updateParticle(p, dt) {
     ay += e.fy;
   }
 
-  // Mild damping prevents unforced air from drifting forever.
-  p.vx *= Math.pow(0.992, dt * 60);
-  p.vy *= Math.pow(0.992, dt * 60);
+  p.vx *= Math.pow(0.993, dt * 60);
+  p.vy *= Math.pow(0.993, dt * 60);
   p.vx += ax * dt;
   p.vy += ay * dt;
 
@@ -323,6 +370,11 @@ function loop(now) {
 
   if (running && ignited) {
     particles.forEach(p => updateParticle(p,dt));
+    densityTimer += dt;
+    if (densityTimer >= 0.22) {
+      redistributeSparseTracers();
+      densityTimer = 0;
+    }
     updateMetrics();
   }
 
@@ -334,6 +386,7 @@ igniteBtn.addEventListener('click',()=>{
   ignited = true;
   running = true;
   lastTime = performance.now();
+  densityTimer = 0;
   igniteBtn.textContent = '🔥 已點火';
   pauseBtn.textContent = '暫停';
   feedbackEl.textContent = '點火了：觀察火焰上方的上升氣流，以及四周空氣向燃燒區補入。';
@@ -350,6 +403,7 @@ clearBtn.addEventListener('click',()=>{
   walls.length = inlets.length = fires.length = chimneys.length = 0;
   ignited = false;
   running = false;
+  densityTimer = 0;
   seedAmbientAir();
   igniteBtn.textContent = '🔥 點火';
   pauseBtn.textContent = '暫停';
