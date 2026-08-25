@@ -15,7 +15,6 @@ let drawing = false;
 let running = false;
 let ignited = false;
 let lastTime = performance.now();
-let emissionAccumulator = 0;
 
 const walls = [];
 const inlets = [];
@@ -24,7 +23,7 @@ const chimneys = [];
 let particles = [];
 
 const CELL = 24;
-const PARTICLE_LIFETIME = 18;
+const MAX_SPEED = 105;
 
 function pointerPos(evt) {
   const r = canvas.getBoundingClientRect();
@@ -36,7 +35,9 @@ function pointerPos(evt) {
 
 function snap(v) { return Math.floor(v / CELL) * CELL; }
 function hasRect(arr, x, y) { return arr.some(o => o.x === x && o.y === y); }
-function blocked(x, y) { return walls.some(w => x >= w.x && x <= w.x + CELL && y >= w.y && y <= w.y + CELL); }
+function blocked(x, y) {
+  return walls.some(w => x >= w.x && x <= w.x + CELL && y >= w.y && y <= w.y + CELL);
+}
 
 function placeAt(pos) {
   const x = snap(pos.x), y = snap(pos.y);
@@ -72,51 +73,49 @@ canvas.addEventListener('pointermove', e => {
 canvas.addEventListener('pointerup', () => drawing = false);
 canvas.addEventListener('pointercancel', () => drawing = false);
 
-function spawnParticle() {
-  let x = 5, y = Math.random() * canvas.height;
-  if (inlets.length) {
-    const inlet = inlets[Math.floor(Math.random() * inlets.length)];
-    x = inlet.x + CELL * 0.5;
-    y = inlet.y + CELL * 0.5 + (Math.random() - .5) * CELL * .6;
+function targetParticleCount() {
+  return Math.max(20, Number(particleSlider.value) || 240);
+}
+
+function randomOpenPoint() {
+  for (let i = 0; i < 80; i++) {
+    const x = 8 + Math.random() * (canvas.width - 16);
+    const y = 8 + Math.random() * (canvas.height - 16);
+    if (!blocked(x, y)) return {x, y};
   }
+  return {x: 8, y: 8};
+}
+
+function makeAmbientParticle(point = randomOpenPoint()) {
   return {
-    x,
-    y,
-    vx: 18 + Math.random() * 10,
-    vy: (Math.random() - .5) * 5,
-    age: 0,
+    x: point.x,
+    y: point.y,
+    vx: (Math.random() - .5) * 1.2,
+    vy: (Math.random() - .5) * 1.2,
     heated: false,
     stagnant: 0
   };
 }
 
-function targetParticleCount() {
-  return Math.max(10, Number(particleSlider.value) || 80);
+function seedAmbientAir() {
+  particles = Array.from({length: targetParticleCount()}, () => makeAmbientParticle());
 }
 
-function seedParticles() {
-  const initial = Math.min(24, targetParticleCount());
-  particles = Array.from({length: initial}, spawnParticle);
-  emissionAccumulator = 0;
+function respawnFromSurroundings(p) {
+  // The viewport is treated as a small window into a much larger body of air.
+  // Air leaving the window is replaced from a random edge, not from one fixed source.
+  const edge = Math.floor(Math.random() * 4);
+  let point;
+  if (edge === 0) point = {x: 3, y: Math.random() * canvas.height};
+  else if (edge === 1) point = {x: canvas.width - 3, y: Math.random() * canvas.height};
+  else if (edge === 2) point = {x: Math.random() * canvas.width, y: 3};
+  else point = {x: Math.random() * canvas.width, y: canvas.height - 3};
+
+  if (blocked(point.x, point.y)) point = randomOpenPoint();
+  Object.assign(p, makeAmbientParticle(point));
 }
 
-function emitParticles(dt) {
-  const target = targetParticleCount();
-  if (particles.length >= target) return;
-
-  // Continuous source: higher slider values also increase emission density.
-  const emissionRate = Math.max(10, target * 0.32); // particles / second
-  emissionAccumulator += dt * emissionRate;
-
-  let toEmit = Math.floor(emissionAccumulator);
-  if (toEmit <= 0) return;
-  emissionAccumulator -= toEmit;
-  toEmit = Math.min(toEmit, target - particles.length);
-
-  for (let i = 0; i < toEmit; i++) particles.push(spawnParticle());
-}
-
-function nearestForce(p, sources, radius, strength, upwardOnly=false) {
+function forceToward(p, sources, radius, strength) {
   let fx = 0, fy = 0;
   for (const s of sources) {
     const sx = s.x + CELL/2, sy = s.y + CELL/2;
@@ -124,72 +123,108 @@ function nearestForce(p, sources, radius, strength, upwardOnly=false) {
     const d = Math.hypot(dx, dy) || 1;
     if (d < radius) {
       const k = (1 - d/radius) * strength;
-      if (upwardOnly) fy -= k;
-      else { fx += dx/d*k; fy += dy/d*k; }
+      fx += dx / d * k;
+      fy += dy / d * k;
+    }
+  }
+  return {fx, fy};
+}
+
+function entrainmentForce(p) {
+  // Moving air drags some nearby air with it. This is deliberately qualitative,
+  // but it lets students see surrounding air begin to move instead of particles
+  // being emitted from one nozzle.
+  let fx = 0, fy = 0, count = 0;
+  const radius = 58;
+  for (const q of particles) {
+    if (q === p) continue;
+    const dx = q.x - p.x, dy = q.y - p.y;
+    const d2 = dx*dx + dy*dy;
+    if (d2 > 0 && d2 < radius*radius) {
+      const d = Math.sqrt(d2);
+      const influence = (1 - d/radius) * 0.055;
+      fx += (q.vx - p.vx) * influence;
+      fy += (q.vy - p.vy) * influence;
+      count++;
+      if (count >= 12) break;
     }
   }
   return {fx, fy};
 }
 
 function updateParticle(p, dt) {
-  p.age += dt;
-  let ax = 7, ay = 0;
+  let ax = 0, ay = 0;
 
-  if (inlets.length) {
-    const f = nearestForce(p, inlets, 140, 18);
-    ax += f.fx * .15;
-    ay += f.fy * .15;
+  // No default wind. Before ignition the air is nearly still.
+  // After ignition, an inlet represents a low-resistance opening that nearby
+  // ambient air can be drawn toward; it is not a particle emitter.
+  if (ignited && inlets.length) {
+    const f = forceToward(p, inlets, 165, 13);
+    ax += f.fx;
+    ay += f.fy;
   }
 
   if (ignited && fires.length) {
     for (const fire of fires) {
       const cx = fire.x + CELL/2, cy = fire.y + CELL/2;
-      const d = Math.hypot(p.x-cx, p.y-cy);
-      if (d < 95) {
+      const dx = p.x - cx, dy = p.y - cy;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d < 125) {
         p.heated = true;
-        ay -= (1-d/95) * 34;
-        ax += 3;
+        const k = 1 - d/125;
+        ay -= 38 * k;              // buoyancy
+        ax += (dx/d) * 3.5 * k;    // slight expansion away from heat source
       }
     }
   }
 
   if (ignited && chimneys.length) {
-    const f = nearestForce(p, chimneys, 190, 26);
+    const f = forceToward(p, chimneys, 230, 20);
     ax += f.fx;
-    ay += f.fy - 10;
+    ay += f.fy - 9;
   }
 
-  if (p.heated) ay -= 10;
+  if (p.heated && ignited) ay -= 8;
 
+  if (ignited) {
+    const e = entrainmentForce(p);
+    ax += e.fx;
+    ay += e.fy;
+  }
+
+  // Gentle damping keeps unforced ambient air almost stationary.
+  p.vx *= Math.pow(0.985, dt * 60);
+  p.vy *= Math.pow(0.985, dt * 60);
   p.vx += ax * dt;
   p.vy += ay * dt;
-  const speed = Math.hypot(p.vx,p.vy);
-  const maxSpeed = 115;
-  if (speed > maxSpeed) {
-    p.vx = p.vx/speed*maxSpeed;
-    p.vy = p.vy/speed*maxSpeed;
+
+  const speed = Math.hypot(p.vx, p.vy);
+  if (speed > MAX_SPEED) {
+    p.vx = p.vx / speed * MAX_SPEED;
+    p.vy = p.vy / speed * MAX_SPEED;
   }
 
   const nx = p.x + p.vx * dt;
   const ny = p.y + p.vy * dt;
 
-  if (blocked(nx, p.y)) p.vx *= -0.35;
+  if (blocked(nx, p.y)) p.vx *= -0.22;
   else p.x = nx;
 
-  if (blocked(p.x, ny)) p.vy *= -0.35;
+  if (blocked(p.x, ny)) p.vy *= -0.22;
   else p.y = ny;
 
-  const s2 = Math.hypot(p.vx,p.vy);
-  if (s2 < 8) p.stagnant += dt;
-  else p.stagnant = Math.max(0,p.stagnant-dt*.5);
+  const currentSpeed = Math.hypot(p.vx, p.vy);
+  if (currentSpeed < 3) p.stagnant += dt;
+  else p.stagnant = Math.max(0, p.stagnant - dt * .6);
 
-  return !(
-    p.x < -20 ||
-    p.x > canvas.width + 20 ||
-    p.y < -30 ||
-    p.y > canvas.height + 30 ||
-    p.age > PARTICLE_LIFETIME
-  );
+  if (blocked(p.x, p.y)) {
+    Object.assign(p, makeAmbientParticle());
+  } else if (
+    p.x < -12 || p.x > canvas.width + 12 ||
+    p.y < -12 || p.y > canvas.height + 12
+  ) {
+    respawnFromSurroundings(p);
+  }
 }
 
 function drawGrid() {
@@ -222,47 +257,46 @@ function draw() {
   ctx.clearRect(0,0,canvas.width,canvas.height);
   drawGrid();
   drawCells(walls,'#374151','');
-  drawCells(inlets,'#2563eb','→');
+  drawCells(inlets,'#2563eb','↔');
   drawCells(fires, ignited ? '#ea580c' : '#9ca3af','🔥');
   drawCells(chimneys,'#7c3aed','↑');
 
   for (const p of particles) {
     const sp = Math.hypot(p.vx,p.vy);
     ctx.beginPath();
-    ctx.arc(p.x,p.y,Math.min(4,1.8+sp/55),0,Math.PI*2);
-    ctx.fillStyle = p.heated ? 'rgba(234,88,12,.78)' : 'rgba(37,99,235,.65)';
+    ctx.arc(p.x,p.y,Math.min(4,1.7+sp/50),0,Math.PI*2);
+    ctx.fillStyle = p.heated && ignited ? 'rgba(234,88,12,.78)' : 'rgba(37,99,235,.48)';
     ctx.fill();
   }
 }
 
 function updateMetrics() {
-  if (!running || particles.length === 0) return;
-  const speeds = particles.map(p=>Math.hypot(p.vx,p.vy));
+  if (!ignited || particles.length === 0) return;
+  const speeds = particles.map(p => Math.hypot(p.vx,p.vy));
   const avg = speeds.reduce((a,b)=>a+b,0)/speeds.length;
   const stagnant = particles.filter(p=>p.stagnant>.8).length/particles.length;
-  const structureBonus = (inlets.length?12:0) + (fires.length?10:0) + (chimneys.length?18:0);
-  const speedPart = Math.min(45, avg/90*45);
-  const penalty = stagnant*40;
-  const score = Math.max(0,Math.min(100,Math.round(structureBonus+speedPart-penalty+15)));
+  const structureBonus = (inlets.length?10:0) + (fires.length?10:0) + (chimneys.length?18:0);
+  const speedPart = Math.min(45, avg/55*45);
+  const penalty = stagnant*32;
+  const score = Math.max(0,Math.min(100,Math.round(structureBonus+speedPart-penalty+18)));
   flowScoreEl.textContent = score + ' / 100';
   avgSpeedEl.textContent = avg.toFixed(1) + '（相對值）';
   stagnantRateEl.textContent = Math.round(stagnant*100) + '%';
 
-  if (!inlets.length) feedbackEl.textContent = '目前沒有進氣口；試著加入一個進氣位置。';
-  else if (!chimneys.length) feedbackEl.textContent = '目前沒有煙囪；加入煙囪後再比較氣流變化。';
-  else if (!fires.length) feedbackEl.textContent = '目前沒有火源；加入火源後才能觀察點火後的浮力效果。';
-  else if (stagnant > .35) feedbackEl.textContent = '有不少空氣停滯。看看是不是有死角、狹窄通道或封閉區域。';
-  else if (score >= 70) feedbackEl.textContent = '在這個簡化模型中，氣流目前相對順暢。試著改一個結構，看看分數會不會更高。';
-  else feedbackEl.textContent = '氣流已經形成，但還有改善空間。可以調整進氣口、轉角或煙囪位置。';
+  if (!fires.length) feedbackEl.textContent = '目前沒有火源；加入火源後才能觀察受熱空氣帶動周圍空氣。';
+  else if (!chimneys.length) feedbackEl.textContent = '目前沒有煙囪；加入煙囪後再比較上升氣流是否更集中。';
+  else if (!inlets.length) feedbackEl.textContent = '沒有標示進氣開口；周圍仍有空氣，但可以加入開口觀察補氣路徑。';
+  else if (stagnant > .55) feedbackEl.textContent = '很多空氣仍接近靜止。看看結構是否讓熱空氣難以上升或排出。';
+  else if (score >= 70) feedbackEl.textContent = '在這個簡化模型中，點火後周圍空氣已形成較明顯的循環流動。';
+  else feedbackEl.textContent = '已看到周圍空氣被帶動；試著調整火源、進氣開口或煙囪位置再比較。';
 }
 
 function loop(now) {
   const dt = Math.min(.033,(now-lastTime)/1000);
   lastTime = now;
 
-  if (running) {
-    emitParticles(dt);
-    particles = particles.filter(p => updateParticle(p,dt));
+  if (running && ignited) {
+    particles.forEach(p => updateParticle(p,dt));
     updateMetrics();
   }
 
@@ -273,36 +307,36 @@ function loop(now) {
 igniteBtn.addEventListener('click',()=>{
   ignited = true;
   running = true;
-  seedParticles();
+  lastTime = performance.now();
   igniteBtn.textContent = '🔥 已點火';
   pauseBtn.textContent = '暫停';
-  feedbackEl.textContent = '正在觀察點火後的氣流變化。';
+  feedbackEl.textContent = '點火了：觀察原本分布在周圍的空氣，哪些開始被帶動。';
 });
 
 pauseBtn.addEventListener('click',()=>{
+  if (!ignited) return;
   running = !running;
-  if (running && particles.length === 0) seedParticles();
-  emissionAccumulator = 0;
   lastTime = performance.now();
   pauseBtn.textContent = running ? '暫停' : '繼續';
 });
 
 clearBtn.addEventListener('click',()=>{
   walls.length = inlets.length = fires.length = chimneys.length = 0;
-  particles = [];
-  running = false;
   ignited = false;
-  emissionAccumulator = 0;
+  running = false;
+  seedAmbientAir();
   igniteBtn.textContent = '🔥 點火';
   pauseBtn.textContent = '暫停';
   flowScoreEl.textContent = avgSpeedEl.textContent = stagnantRateEl.textContent = '—';
-  feedbackEl.textContent = '先設計火箭爐，再按「點火」。';
+  feedbackEl.textContent = '周圍已充滿空氣。先設計火箭爐，再按「點火」。';
 });
 
 particleSlider.addEventListener('input',()=>{
   const target = targetParticleCount();
   if (particles.length > target) particles.length = target;
-  if (running && particles.length === 0) seedParticles();
+  while (particles.length < target) particles.push(makeAmbientParticle());
 });
 
+seedAmbientAir();
+feedbackEl.textContent = '周圍已充滿空氣。先設計火箭爐，再按「點火」。';
 requestAnimationFrame(loop);
