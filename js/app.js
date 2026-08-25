@@ -16,6 +16,7 @@ let running = false;
 let ignited = false;
 let lastTime = performance.now();
 let densityTimer = 0;
+let connectivityDirty = true;
 
 const walls = [];
 const inlets = [];
@@ -26,6 +27,10 @@ let particles = [];
 const CELL = 24;
 const MAX_SPEED = 125;
 const DENSITY_CELL = 90;
+const GRID_COLS = Math.ceil(canvas.width / CELL);
+const GRID_ROWS = Math.ceil(canvas.height / CELL);
+let regionMap = new Int32Array(GRID_COLS * GRID_ROWS);
+let externalRegions = new Set();
 
 function pointerPos(evt) {
   const r = canvas.getBoundingClientRect();
@@ -41,14 +46,91 @@ function blocked(x, y) {
   return walls.some(w => x >= w.x && x <= w.x + CELL && y >= w.y && y <= w.y + CELL);
 }
 
+function wallCellSet() {
+  const set = new Set();
+  for (const w of walls) {
+    const cx = Math.floor(w.x / CELL);
+    const cy = Math.floor(w.y / CELL);
+    if (cx >= 0 && cx < GRID_COLS && cy >= 0 && cy < GRID_ROWS) {
+      set.add(cy * GRID_COLS + cx);
+    }
+  }
+  return set;
+}
+
+function rebuildConnectivity() {
+  const wallCells = wallCellSet();
+  regionMap = new Int32Array(GRID_COLS * GRID_ROWS);
+  externalRegions = new Set();
+  let nextRegion = 1;
+
+  for (let start = 0; start < regionMap.length; start++) {
+    if (wallCells.has(start) || regionMap[start] !== 0) continue;
+
+    const regionId = nextRegion++;
+    const queue = [start];
+    regionMap[start] = regionId;
+    let touchesBoundary = false;
+
+    for (let qi = 0; qi < queue.length; qi++) {
+      const idx = queue[qi];
+      const x = idx % GRID_COLS;
+      const y = Math.floor(idx / GRID_COLS);
+
+      if (x === 0 || y === 0 || x === GRID_COLS - 1 || y === GRID_ROWS - 1) {
+        touchesBoundary = true;
+      }
+
+      const neighbors = [
+        [x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]
+      ];
+
+      for (const [nx, ny] of neighbors) {
+        if (nx < 0 || nx >= GRID_COLS || ny < 0 || ny >= GRID_ROWS) continue;
+        const ni = ny * GRID_COLS + nx;
+        if (wallCells.has(ni) || regionMap[ni] !== 0) continue;
+        regionMap[ni] = regionId;
+        queue.push(ni);
+      }
+    }
+
+    if (touchesBoundary) externalRegions.add(regionId);
+  }
+
+  connectivityDirty = false;
+}
+
+function ensureConnectivity() {
+  if (connectivityDirty) rebuildConnectivity();
+}
+
+function regionAt(x, y) {
+  ensureConnectivity();
+  if (x < 0 || x >= canvas.width || y < 0 || y >= canvas.height) return 0;
+  const cx = Math.min(GRID_COLS - 1, Math.max(0, Math.floor(x / CELL)));
+  const cy = Math.min(GRID_ROWS - 1, Math.max(0, Math.floor(y / CELL)));
+  return regionMap[cy * GRID_COLS + cx] || 0;
+}
+
+function isExternalPoint(x, y) {
+  const region = regionAt(x, y);
+  return region !== 0 && externalRegions.has(region);
+}
+
 function placeAt(pos) {
   const x = snap(pos.x), y = snap(pos.y);
   if (selectedTool === 'wall') {
-    if (!hasRect(walls, x, y)) walls.push({x, y});
+    if (!hasRect(walls, x, y)) {
+      walls.push({x, y});
+      connectivityDirty = true;
+    }
   } else if (selectedTool === 'erase') {
     for (const arr of [walls, inlets, fires, chimneys]) {
       const i = arr.findIndex(o => o.x === x && o.y === y);
-      if (i >= 0) arr.splice(i, 1);
+      if (i >= 0) {
+        if (arr === walls) connectivityDirty = true;
+        arr.splice(i, 1);
+      }
     }
   } else {
     const map = { inlet: inlets, fire: fires, chimney: chimneys };
@@ -79,16 +161,35 @@ function targetParticleCount() {
   return Math.max(20, Number(particleSlider.value) || 240);
 }
 
-function randomOpenPoint() {
-  for (let i = 0; i < 100; i++) {
+function randomOpenPoint(regionId = null) {
+  for (let i = 0; i < 160; i++) {
     const x = 8 + Math.random() * (canvas.width - 16);
     const y = 8 + Math.random() * (canvas.height - 16);
-    if (!blocked(x, y)) return {x, y};
+    if (blocked(x, y)) continue;
+    if (regionId !== null && regionAt(x, y) !== regionId) continue;
+    return {x, y};
+  }
+  return null;
+}
+
+function randomExternalPoint() {
+  ensureConnectivity();
+  for (let i = 0; i < 220; i++) {
+    const point = randomOpenPoint();
+    if (point && isExternalPoint(point.x, point.y)) return point;
+  }
+
+  for (let cy = 0; cy < GRID_ROWS; cy++) {
+    for (let cx = 0; cx < GRID_COLS; cx++) {
+      const x = cx * CELL + CELL / 2;
+      const y = cy * CELL + CELL / 2;
+      if (isExternalPoint(x, y) && !blocked(x, y)) return {x, y};
+    }
   }
   return {x: 8, y: 8};
 }
 
-function makeAmbientParticle(point = randomOpenPoint()) {
+function makeAmbientParticle(point = randomExternalPoint()) {
   return {
     x: point.x,
     y: point.y,
@@ -100,14 +201,13 @@ function makeAmbientParticle(point = randomOpenPoint()) {
 }
 
 function seedAmbientAir() {
-  particles = Array.from({length: targetParticleCount()}, () => makeAmbientParticle());
+  ensureConnectivity();
+  particles = Array.from({length: targetParticleCount()}, () => makeAmbientParticle(randomExternalPoint()));
 }
 
 function respawnFromSurroundings(p) {
-  // Tracers represent visible markers in an already air-filled space.
-  // When one leaves the viewport, place it back in the ambient field rather
-  // than forcing it to travel all the way in from a single edge.
-  Object.assign(p, makeAmbientParticle(randomOpenPoint()));
+  // Only the region connected to the outside atmosphere can receive new tracers.
+  Object.assign(p, makeAmbientParticle(randomExternalPoint()));
 }
 
 function forceToward(p, sources, radius, strength) {
@@ -135,7 +235,6 @@ function fireCirculationForce(p) {
     const dy = p.y - cy;
     const dist = Math.hypot(dx, dy) || 1;
 
-    // Surrounding air is drawn toward the combustion region over a wide area.
     const intakeRadius = 460;
     if (dist < intakeRadius) {
       const k = 1 - dist / intakeRadius;
@@ -143,7 +242,6 @@ function fireCirculationForce(p) {
       fy += (-dy / dist) * 16 * k;
     }
 
-    // Broad rising plume above the flame.
     if (p.y < cy + 55) {
       const verticalDistance = Math.max(0, cy - p.y);
       const plumeWidth = 85 + verticalDistance * 0.34;
@@ -169,8 +267,10 @@ function fireCirculationForce(p) {
 function entrainmentForce(p) {
   let fx = 0, fy = 0, count = 0;
   const radius = 105;
+  const sourceRegion = regionAt(p.x, p.y);
+
   for (const q of particles) {
-    if (q === p) continue;
+    if (q === p || regionAt(q.x, q.y) !== sourceRegion) continue;
     const dx = q.x - p.x, dy = q.y - p.y;
     const d2 = dx*dx + dy*dy;
     if (d2 > 0 && d2 < radius*radius) {
@@ -187,55 +287,75 @@ function entrainmentForce(p) {
 
 function redistributeSparseTracers() {
   if (!ignited || particles.length < 20) return;
+  ensureConnectivity();
 
   const cols = Math.ceil(canvas.width / DENSITY_CELL);
   const rows = Math.ceil(canvas.height / DENSITY_CELL);
-  const counts = Array(cols * rows).fill(0);
+  const buckets = new Map();
 
   for (const p of particles) {
     if (p.x < 0 || p.x >= canvas.width || p.y < 0 || p.y >= canvas.height) continue;
+    const region = regionAt(p.x, p.y);
+    if (!region) continue;
     const cx = Math.min(cols - 1, Math.floor(p.x / DENSITY_CELL));
     const cy = Math.min(rows - 1, Math.floor(p.y / DENSITY_CELL));
-    counts[cy * cols + cx]++;
+    const key = `${region}:${cx}:${cy}`;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(p);
   }
 
-  const expected = particles.length / (cols * rows);
-  const sparseThreshold = Math.max(1, expected * 0.28);
-  const denseThreshold = Math.max(3, expected * 1.9);
-  const sparseCells = [];
-
+  const regionCells = new Map();
   for (let cy = 0; cy < rows; cy++) {
     for (let cx = 0; cx < cols; cx++) {
-      if (counts[cy * cols + cx] <= sparseThreshold) sparseCells.push({cx, cy});
+      const centerX = Math.min(canvas.width - 1, cx * DENSITY_CELL + DENSITY_CELL / 2);
+      const centerY = Math.min(canvas.height - 1, cy * DENSITY_CELL + DENSITY_CELL / 2);
+      const region = regionAt(centerX, centerY);
+      if (!region) continue;
+      if (!regionCells.has(region)) regionCells.set(region, []);
+      regionCells.get(region).push({cx, cy});
     }
   }
 
-  if (!sparseCells.length) return;
-
-  // Move only a few tracers per pass so the redistribution is not visually abrupt.
   let moved = 0;
   const maxMoves = Math.max(2, Math.round(particles.length * 0.018));
 
-  for (const p of particles) {
-    if (moved >= maxMoves || !sparseCells.length) break;
-    const cx = Math.min(cols - 1, Math.max(0, Math.floor(p.x / DENSITY_CELL)));
-    const cy = Math.min(rows - 1, Math.max(0, Math.floor(p.y / DENSITY_CELL)));
-    if (counts[cy * cols + cx] < denseThreshold) continue;
+  for (const [region, cells] of regionCells.entries()) {
+    if (moved >= maxMoves) break;
+    const regionParticles = particles.filter(p => regionAt(p.x, p.y) === region);
+    if (!regionParticles.length || !cells.length) continue;
 
-    const target = sparseCells.splice(Math.floor(Math.random() * sparseCells.length), 1)[0];
-    let point = null;
-    for (let tries = 0; tries < 20; tries++) {
-      const x = target.cx * DENSITY_CELL + Math.random() * DENSITY_CELL;
-      const y = target.cy * DENSITY_CELL + Math.random() * DENSITY_CELL;
-      if (x < canvas.width && y < canvas.height && !blocked(x, y)) {
+    const expected = regionParticles.length / cells.length;
+    const sparseThreshold = Math.max(0, expected * 0.28);
+    const denseThreshold = Math.max(2, expected * 1.9);
+    const sparseCells = cells.filter(c => {
+      const key = `${region}:${c.cx}:${c.cy}`;
+      return (buckets.get(key)?.length || 0) <= sparseThreshold;
+    });
+
+    if (!sparseCells.length) continue;
+
+    for (const p of regionParticles) {
+      if (moved >= maxMoves || !sparseCells.length) break;
+      const pcx = Math.min(cols - 1, Math.max(0, Math.floor(p.x / DENSITY_CELL)));
+      const pcy = Math.min(rows - 1, Math.max(0, Math.floor(p.y / DENSITY_CELL)));
+      const sourceKey = `${region}:${pcx}:${pcy}`;
+      if ((buckets.get(sourceKey)?.length || 0) < denseThreshold) continue;
+
+      const target = sparseCells.splice(Math.floor(Math.random() * sparseCells.length), 1)[0];
+      let point = null;
+      for (let tries = 0; tries < 30; tries++) {
+        const x = target.cx * DENSITY_CELL + Math.random() * DENSITY_CELL;
+        const y = target.cy * DENSITY_CELL + Math.random() * DENSITY_CELL;
+        if (x >= canvas.width || y >= canvas.height || blocked(x, y)) continue;
+        if (regionAt(x, y) !== region) continue;
         point = {x, y};
         break;
       }
-    }
-    if (!point) continue;
+      if (!point) continue;
 
-    Object.assign(p, makeAmbientParticle(point));
-    moved++;
+      Object.assign(p, makeAmbientParticle(point));
+      moved++;
+    }
   }
 }
 
@@ -291,7 +411,10 @@ function updateParticle(p, dt) {
   else p.stagnant = Math.max(0, p.stagnant - dt * .7);
 
   if (blocked(p.x, p.y)) {
-    Object.assign(p, makeAmbientParticle());
+    const sameRegion = regionAt(p.x - p.vx * dt, p.y - p.vy * dt);
+    const point = sameRegion ? randomOpenPoint(sameRegion) : null;
+    if (point) Object.assign(p, makeAmbientParticle(point));
+    else respawnFromSurroundings(p);
   } else if (
     p.x < -12 || p.x > canvas.width + 12 ||
     p.y < -12 || p.y > canvas.height + 12
@@ -356,9 +479,13 @@ function updateMetrics() {
   avgSpeedEl.textContent = avg.toFixed(1) + '（相對值）';
   stagnantRateEl.textContent = Math.round(stagnant*100) + '%';
 
+  const fireRegions = fires.map(f => regionAt(f.x + CELL/2, f.y + CELL/2)).filter(Boolean);
+  const fireHasOutsideAir = fireRegions.some(r => externalRegions.has(r));
+
   if (!fires.length) feedbackEl.textContent = '目前沒有火源；加入火源後才能觀察受熱空氣帶動周圍空氣。';
-  else if (!chimneys.length) feedbackEl.textContent = '周圍空氣已受到火源帶動；加入煙囪後可觀察上升氣流是否更集中。';
-  else if (!inlets.length) feedbackEl.textContent = '沒有標示進氣開口；周圍空氣仍會補入，但加入開口後可觀察主要補氣路徑。';
+  else if (!fireHasOutsideAir) feedbackEl.textContent = '燃燒區目前被爐壁完全包住：內部空氣仍會流動，但外界沒有新的空氣補入。';
+  else if (!chimneys.length) feedbackEl.textContent = '燃燒區與外界相通；加入煙囪後可觀察上升氣流是否更集中。';
+  else if (!inlets.length) feedbackEl.textContent = '燃燒區仍與外界連通；加入進氣開口後可更清楚觀察主要補氣路徑。';
   else if (stagnant > .55) feedbackEl.textContent = '很多空氣仍接近靜止。看看結構是否阻礙熱空氣上升或周圍空氣補入。';
   else if (score >= 70) feedbackEl.textContent = '點火後已形成較明顯的上升與補氣循環。';
   else feedbackEl.textContent = '已看到周圍空氣被帶動；試著調整火源、進氣開口或煙囪位置再比較。';
@@ -383,13 +510,14 @@ function loop(now) {
 }
 
 igniteBtn.addEventListener('click',()=>{
+  ensureConnectivity();
   ignited = true;
   running = true;
   lastTime = performance.now();
   densityTimer = 0;
   igniteBtn.textContent = '🔥 已點火';
   pauseBtn.textContent = '暫停';
-  feedbackEl.textContent = '點火了：觀察火焰上方的上升氣流，以及四周空氣向燃燒區補入。';
+  feedbackEl.textContent = '點火了：觀察火焰上方的上升氣流，以及四周空氣是否能沿開口補入。';
 });
 
 pauseBtn.addEventListener('click',()=>{
@@ -404,6 +532,7 @@ clearBtn.addEventListener('click',()=>{
   ignited = false;
   running = false;
   densityTimer = 0;
+  connectivityDirty = true;
   seedAmbientAir();
   igniteBtn.textContent = '🔥 點火';
   pauseBtn.textContent = '暫停';
@@ -412,11 +541,13 @@ clearBtn.addEventListener('click',()=>{
 });
 
 particleSlider.addEventListener('input',()=>{
+  ensureConnectivity();
   const target = targetParticleCount();
   if (particles.length > target) particles.length = target;
-  while (particles.length < target) particles.push(makeAmbientParticle());
+  while (particles.length < target) particles.push(makeAmbientParticle(randomExternalPoint()));
 });
 
+rebuildConnectivity();
 seedAmbientAir();
 feedbackEl.textContent = '周圍已充滿空氣。先設計火箭爐，再按「點火」。';
 requestAnimationFrame(loop);
