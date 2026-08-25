@@ -1,19 +1,21 @@
-/* Physics v2.5 tracer recycling + persistent combustion-product tracers.
+/* Physics v2.5.2 tracer recycling + combustion-product visualization.
  *
- * Tracers are visualization only. The fluid solver is NOT changed here.
+ * Tracers visualize air motion; they are not oxygen molecules and do not
+ * participate in the chemistry solver.
  *
  * Rules:
- * 1) Requested tracer count is preserved exactly.
- * 2) Tracers are never teleported while they remain inside the canvas.
- * 3) Once a tracer enters combustion products (smoke scalar above threshold),
- *    it stays gray until it truly exits the canvas.
- * 4) A tracer that exits is reintroduced from a solved inflow boundary. If no
- *    inflow currently exists, it waits on an open boundary until flow develops.
+ * 1) Blue = fresh-air tracer (the same flow carries the oxygen scalar).
+ * 2) Orange = fresh air that has been heated.
+ * 3) Gray = tracer that has entered combustion-product gas (exhaustGas).
+ * 4) Black smoke is rendered separately by the smoke scalar; gray is NOT soot.
+ * 5) Tracers are never teleported while inside the canvas and reset to fresh
+ *    only after they truly exit and re-enter from an outside boundary.
  */
 (() => {
   const MIN_INFLOW = 0.03;
   const EDGE_INSET = 2.5;
-  const EXHAUST_SMOKE_THRESHOLD = 0.08;
+  const EXHAUST_GAS_THRESHOLD = 0.035;
+  const SMOKE_FALLBACK_THRESHOLD = 0.14;
 
   function inflowCandidates() {
     const c = [];
@@ -73,10 +75,21 @@
     return weightedPick(inflowCandidates()) || openBoundaryPoint();
   };
 
+  function localExhaustAt(x, y) {
+    const api = window.physicsV25;
+    if (api && typeof api.sampleExhaustAt === 'function') {
+      return api.sampleExhaustAt(x, y);
+    }
+    return 0;
+  }
+
   function markCombustionProduct(p) {
     if (p.exhaust) return;
+    const localExhaust = localExhaustAt(p.x, p.y);
     const localSmoke = sampleField(smoke, p.x, p.y, 0);
-    if (localSmoke >= EXHAUST_SMOKE_THRESHOLD) p.exhaust = true;
+    if (localExhaust >= EXHAUST_GAS_THRESHOLD || localSmoke >= SMOKE_FALLBACK_THRESHOLD) {
+      p.exhaust = true;
+    }
   }
 
   function resetAfterTrueExit(p) {
@@ -132,17 +145,19 @@
     for (const p of particles) {
       const t = sampleField(temperature, p.x, p.y, AMBIENT_T);
       const localSmoke = sampleField(smoke, p.x, p.y, 0);
+      const localO2 = sampleField(oxygen, p.x, p.y, AMBIENT_O2);
       const speed = Math.hypot(p.vx, p.vy);
       ctx.beginPath();
       ctx.arc(p.x, p.y, clamp(1.8 + speed / 90, 1.8, 4.2), 0, Math.PI * 2);
 
       if (p.exhaust) {
-        const alpha = clamp(0.66 + localSmoke * 0.16, 0.66, 0.88);
+        const alpha = clamp(0.58 + localSmoke * 0.10, 0.58, 0.76);
         ctx.fillStyle = `rgba(75,85,99,${alpha})`;
       } else if (t > 40) {
         ctx.fillStyle = 'rgba(234,88,12,.72)';
       } else {
-        ctx.fillStyle = 'rgba(37,99,235,.52)';
+        const alpha = clamp(0.34 + localO2 * 0.22, 0.34, 0.56);
+        ctx.fillStyle = `rgba(37,99,235,${alpha})`;
       }
       ctx.fill();
     }
