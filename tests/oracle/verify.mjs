@@ -1,15 +1,32 @@
 import path from 'node:path';
-import {
-  CHECKPOINTS,
-  FIELD_NAMES,
-  GOLDEN_DIR,
-  ROOT,
-  SCALAR_NAMES,
-  SCENARIOS,
-  readSnapshotSet,
-} from './legacy-harness.mjs';
-import {runScenariosParallel} from './parallel-runner.mjs';
+import {fileURLToPath} from 'node:url';
+import fs from 'node:fs';
 import {runModuleScenariosParallel} from './module-runner.mjs';
+
+const ORACLE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(ORACLE_DIR, '../..');
+const GOLDEN_DIR = path.join(ORACLE_DIR, 'golden');
+const SCENARIOS = ['straight', 'baffle', 'twin-channel', 'sealed'];
+const CHECKPOINTS = [1, 30, 120, 300, 600];
+const FIELD_NAMES = [
+  'u', 'v', 'pressure', 'divergence', 'temperature', 'oxygen', 'smoke',
+  'brickTemp', 'unburnedGas', 'exhaustGas', 'ash', 'ashBed', 'charResidue',
+  'flyAsh', 'secondaryResidence'
+];
+const SCALAR_NAMES = [
+  'ashGeneratedTotal', 'ashDepositedTotal', 'ashOutTotal', 'ashBurnedTotal',
+  'charGeneratedTotal', 'charBurnedTotal', 'flyAshOutTotal',
+  'flyAshLiftedTotal', 'flyAshDepositedTotal', 'secondaryIndex',
+  'smokeOutIndex', 'pressureResidual', 'pressureEquationResidual',
+  'projectedInFlow', 'projectedOutFlow'
+];
+
+function readSnapshotSet(directory) {
+  return Object.fromEntries(SCENARIOS.map(scenario => {
+    const file = path.join(directory, `${scenario}.json`);
+    return [scenario, JSON.parse(fs.readFileSync(file, 'utf8'))];
+  }));
+}
 
 function option(name, fallback) {
   const prefix = `${name}=`;
@@ -128,42 +145,27 @@ function describeMismatch(mismatch) {
 const goldenDirectory = resolveDirectory(option('--golden-dir', GOLDEN_DIR));
 const snapshotDirectoryValue = option('--snapshot-dir', '');
 const snapshotDirectory = snapshotDirectoryValue ? resolveDirectory(snapshotDirectoryValue) : null;
-const skipHooksCheck = process.argv.includes('--skip-hooks-check');
-const engine = option('--engine', 'legacy');
+const engine = option('--engine', 'module');
 
 try {
+  if (engine !== 'module') {
+    throw new Error(`module-only oracle does not support engine=${engine}`);
+  }
   const expectedSet = readSnapshotSet(goldenDirectory);
   const actualSet = {};
-
-  if (engine !== 'legacy' && engine !== 'module') {
-    throw new Error(`unknown engine: ${engine}`);
-  }
 
   if (snapshotDirectory) {
     Object.assign(actualSet, readSnapshotSet(snapshotDirectory));
     console.log(`verify: comparing snapshot set ${snapshotDirectory}`);
-  } else if (engine === 'module') {
+  } else {
     console.log('verify: fresh module-engine run with oracle registry enabled');
     Object.assign(actualSet, await runModuleScenariosParallel(SCENARIOS));
-    for (const scenario of SCENARIOS) console.log(`  captured ${scenario}`);
-  } else {
-    console.log('verify: fresh legacy run with oracle hooks enabled');
-    Object.assign(actualSet, await runScenariosParallel(SCENARIOS, {hooks: true}));
     for (const scenario of SCENARIOS) console.log(`  captured ${scenario}`);
   }
 
   const goldenMismatch = compareSets(actualSet, expectedSet, 'golden compare');
   if (goldenMismatch) throw new Error(describeMismatch(goldenMismatch));
   console.log(`GREEN golden self-check: ${countChecks()} field/counter checks`);
-
-  if (engine === 'legacy' && !snapshotDirectory && !skipHooksCheck) {
-    console.log('verify: fresh legacy run with N1a registration disabled');
-    const noHookSet = await runScenariosParallel(SCENARIOS, {hooks: false});
-    for (const scenario of SCENARIOS) console.log(`  captured ${scenario}`);
-    const hookMismatch = compareSets(noHookSet, actualSet, 'hooks on/off compare');
-    if (hookMismatch) throw new Error(describeMismatch(hookMismatch));
-    console.log(`GREEN hooks on/off: ${countChecks()} field/counter checks`);
-  }
 
   console.log('GREEN verify complete');
 } catch (error) {
