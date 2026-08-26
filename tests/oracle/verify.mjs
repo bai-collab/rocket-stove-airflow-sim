@@ -9,6 +9,7 @@ import {
   readSnapshotSet,
 } from './legacy-harness.mjs';
 import {runScenariosParallel} from './parallel-runner.mjs';
+import {runModuleScenariosParallel} from './module-runner.mjs';
 
 function option(name, fallback) {
   const prefix = `${name}=`;
@@ -128,14 +129,23 @@ const goldenDirectory = resolveDirectory(option('--golden-dir', GOLDEN_DIR));
 const snapshotDirectoryValue = option('--snapshot-dir', '');
 const snapshotDirectory = snapshotDirectoryValue ? resolveDirectory(snapshotDirectoryValue) : null;
 const skipHooksCheck = process.argv.includes('--skip-hooks-check');
+const engine = option('--engine', 'legacy');
 
 try {
   const expectedSet = readSnapshotSet(goldenDirectory);
   const actualSet = {};
 
+  if (engine !== 'legacy' && engine !== 'module') {
+    throw new Error(`unknown engine: ${engine}`);
+  }
+
   if (snapshotDirectory) {
     Object.assign(actualSet, readSnapshotSet(snapshotDirectory));
     console.log(`verify: comparing snapshot set ${snapshotDirectory}`);
+  } else if (engine === 'module') {
+    console.log('verify: fresh module-engine run with oracle registry enabled');
+    Object.assign(actualSet, await runModuleScenariosParallel(SCENARIOS));
+    for (const scenario of SCENARIOS) console.log(`  captured ${scenario}`);
   } else {
     console.log('verify: fresh legacy run with oracle hooks enabled');
     Object.assign(actualSet, await runScenariosParallel(SCENARIOS, {hooks: true}));
@@ -146,7 +156,7 @@ try {
   if (goldenMismatch) throw new Error(describeMismatch(goldenMismatch));
   console.log(`GREEN golden self-check: ${countChecks()} field/counter checks`);
 
-  if (!snapshotDirectory && !skipHooksCheck) {
+  if (engine === 'legacy' && !snapshotDirectory && !skipHooksCheck) {
     console.log('verify: fresh legacy run with N1a registration disabled');
     const noHookSet = await runScenariosParallel(SCENARIOS, {hooks: false});
     for (const scenario of SCENARIOS) console.log(`  captured ${scenario}`);
