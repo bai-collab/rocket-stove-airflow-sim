@@ -1228,4 +1228,54 @@
     sampleCharAt(x, y) { return sampleScalarWallSafe(charResidue, x, y, 0); },
     sampleFlyAshAt(x, y) { return sampleScalarWallSafe(flyAsh, x, y, 0); }
   };
+
+  // Test-only, read-only registration of v2.6 private fields and counters.
+  if (typeof globalThis !== 'undefined') {
+    if (globalThis.__oracleFields) {
+      const fields = globalThis.__oracleFields;
+      fields.unburnedGas = unburnedGas;
+      fields.exhaustGas = exhaustGas;
+      fields.ash = ash;
+      fields.ashBed = ashBed;
+      fields.charResidue = charResidue;
+      fields.flyAsh = flyAsh;
+      fields.secondaryResidence = secondaryResidence;
+    }
+    if (globalThis.__oracleScalars) {
+      const scalars = globalThis.__oracleScalars;
+      Object.defineProperty(scalars, 'secondaryIndex', {
+        configurable: true, enumerable: true, get: () => secondaryIndex
+      });
+      Object.defineProperty(scalars, 'smokeOutIndex', {
+        configurable: true, enumerable: true, get: () => smokeOutIndex
+      });
+      Object.defineProperty(scalars, 'ashGeneratedTotal', {
+        configurable: true, enumerable: true, get: () => ashGeneratedTotal
+      });
+      Object.defineProperty(scalars, 'ashDepositedTotal', {
+        configurable: true, enumerable: true, get: () => ashDepositedTotal
+      });
+      Object.defineProperty(scalars, 'ashOutTotal', {
+        configurable: true, enumerable: true, get: () => ashOutTotal
+      });
+      Object.defineProperty(scalars, 'ashBurnedTotal', {
+        configurable: true, enumerable: true, get: () => ashBurnedTotal
+      });
+      Object.defineProperty(scalars, 'charGeneratedTotal', {
+        configurable: true, enumerable: true, get: () => charGeneratedTotal
+      });
+      Object.defineProperty(scalars, 'charBurnedTotal', {
+        configurable: true, enumerable: true, get: () => charBurnedTotal
+      });
+      Object.defineProperty(scalars, 'flyAshOutTotal', {
+        configurable: true, enumerable: true, get: () => flyAshOutTotal
+      });
+      Object.defineProperty(scalars, 'flyAshLiftedTotal', {
+        configurable: true, enumerable: true, get: () => flyAshLiftedTotal
+      });
+      Object.defineProperty(scalars, 'flyAshDepositedTotal', {
+        configurable: true, enumerable: true, get: () => flyAshDepositedTotal
+      });
+    }
+  }
 })();

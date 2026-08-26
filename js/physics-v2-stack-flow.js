@@ -455,6 +455,12 @@
     reset: resetStackDiagnostics
   };
 
+  if (typeof globalThis !== 'undefined' && globalThis.__oracleFields) {
+    globalThis.__oracleFields.boundaryU = boundaryU;
+    globalThis.__oracleFields.boundaryV = boundaryV;
+    globalThis.__oracleFields.boundaryMask = boundaryMask;
+  }
+
   // Stratified tracer seeding.  This changes only visualization: it does not
   // alter temperature, oxygen, pressure, density, or velocity fields.
   seedTracers = function() {

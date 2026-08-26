@@ -350,4 +350,21 @@
     if (typeof previousResetHook === 'function') previousResetHook();
     resetConservationDiagnostics();
   };
+
+  // Test-only, read-only registration of private conservation diagnostics.
+  if (typeof globalThis !== 'undefined' && globalThis.__oracleScalars) {
+    const scalars = globalThis.__oracleScalars;
+    Object.defineProperty(scalars, 'pressureResidual', {
+      configurable: true, enumerable: true, get: () => pressureResidual
+    });
+    Object.defineProperty(scalars, 'pressureEquationResidual', {
+      configurable: true, enumerable: true, get: () => pressureEquationResidual
+    });
+    Object.defineProperty(scalars, 'projectedInFlow', {
+      configurable: true, enumerable: true, get: () => projectedInFlow
+    });
+    Object.defineProperty(scalars, 'projectedOutFlow', {
+      configurable: true, enumerable: true, get: () => projectedOutFlow
+    });
+  }
 })();

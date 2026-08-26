@@ -72,6 +72,20 @@ const brickTemp = new Float32Array(N);
 const brickTempNext = new Float32Array(N);
 const solid = new Uint8Array(N);
 
+// Test-only, read-only snapshot registration.  The registry is deliberately
+// opt-in so normal browser runs do not allocate or execute any oracle path.
+if (typeof globalThis !== 'undefined' && globalThis.__oracleFields) {
+  globalThis.__oracleFields.u = u;
+  globalThis.__oracleFields.v = v;
+  globalThis.__oracleFields.pressure = pressure;
+  globalThis.__oracleFields.divergence = divergence;
+  globalThis.__oracleFields.temperature = temperature;
+  globalThis.__oracleFields.oxygen = oxygen;
+  globalThis.__oracleFields.smoke = smoke;
+  globalThis.__oracleFields.brickTemp = brickTemp;
+  globalThis.__oracleFields.solid = solid;
+}
+
 temperature.fill(AMBIENT_T);
 oxygen.fill(AMBIENT_O2);
 brickTemp.fill(AMBIENT_T);
