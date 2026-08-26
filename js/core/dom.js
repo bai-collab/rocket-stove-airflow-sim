@@ -19,11 +19,13 @@ export const pauseBtn = documentRef?.getElementById?.('pauseBtn') || null;
 export const clearBtn = documentRef?.getElementById?.('clearBtn') || null;
 export const particleSlider = documentRef?.getElementById?.('particleCount') || null;
 export const fanPressureSlider = documentRef?.getElementById?.('fanPressure') || null;
+export const fanPressureValueEl = documentRef?.getElementById?.('fanPressureValue') || null;
 export const flowScoreEl = documentRef?.getElementById?.('flowScore') || null;
 export const avgSpeedEl = documentRef?.getElementById?.('avgSpeed') || null;
 export const stagnantRateEl = documentRef?.getElementById?.('stagnantRate') || null;
 export const oxygenRateEl = documentRef?.getElementById?.('oxygenRate') || null;
 export const feedbackEl = documentRef?.getElementById?.('feedback') || null;
+export const presetStatus = documentRef?.getElementById?.('presetStatus') || null;
 
 export function readParticleCount() {
   return particleSlider ? Number(particleSlider.value) || 240 : 240;

@@ -14,6 +14,8 @@ import {
   smoke,
   solid,
   temperature,
+  unburnedGas,
+  exhaustGas,
   u,
   v
 } from '../core/fields.js';
@@ -22,8 +24,6 @@ import {advectFieldBase} from './solver-base.js';
 
 const TRACE_STEP = Math.max(2, H * 0.35);
 const EPS = 1e-10;
-let capturedUnburnedGas = null;
-let capturedExhaustGas = null;
 
 function traceBackStatus(x0, y0, x1, y1) {
   const dx = x1 - x0;
@@ -188,12 +188,6 @@ export function advectField(dst, src, velocityU, velocityV, dt, fallback) {
     return;
   }
 
-  // Keep the same private-field capture side effect as the legacy patch.
-  if (fallback === 0 && dst !== smoke) {
-    if (!capturedUnburnedGas) capturedUnburnedGas = dst;
-    else if (dst !== capturedUnburnedGas && !capturedExhaustGas) capturedExhaustGas = dst;
-  }
-
   for (let y = 0; y < NY; y++) {
     for (let x = 0; x < NX; x++) {
       const i = idx(x, y);
@@ -227,5 +221,5 @@ export function advectField(dst, src, velocityU, velocityV, dt, fallback) {
 }
 
 export function getCapturedScalars() {
-  return {unburnedGas: capturedUnburnedGas, exhaustGas: capturedExhaustGas};
+  return {unburnedGas, exhaustGas};
 }
