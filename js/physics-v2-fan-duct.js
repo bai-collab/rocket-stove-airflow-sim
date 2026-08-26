@@ -1,4 +1,4 @@
-/* Physics v2.4.2: duct resistance + electric fan.
+/* Physics v2.4.3: duct resistance + electric fan.
  *
  * Duct resistance is based on Darcy-Weisbach in distributed form:
  *   dp/L = f/Dh * rho*V^2/2
@@ -22,7 +22,8 @@
   const WALL_SCAN_CELLS = 8;
   const DRAG_ACCEL_CAP = 150;
   const FAN_CD = 0.62;
-  const FAN_VELOCITY_CAP = 165;
+  const FAN_VELOCITY_CAP = 150;
+  const FAN_REFERENCE_PRESSURE = 5;
   const FAN_RELAX = 4.4;
 
   const FAN_SUCTION_LENGTH = BUILD_CELL * 4.2;
@@ -154,7 +155,10 @@
     const dp=Math.max(0,fanPressurePa());
     if (dp<=0) return 0;
     const ms=FAN_CD*Math.sqrt(2*dp/RHO);
-    return Math.min(FAN_VELOCITY_CAP,ms*PPM);
+    const referenceMs=FAN_CD*Math.sqrt(2*FAN_REFERENCE_PRESSURE/RHO);
+    // Normalize the pressure curve to the teaching-scale velocity cap. This
+    // keeps 0..5 Pa monotonic instead of saturating at almost every setting.
+    return clamp(ms/Math.max(1e-6,referenceMs)*FAN_VELOCITY_CAP,0,FAN_VELOCITY_CAP);
   }
 
   function applyFans(dt) {

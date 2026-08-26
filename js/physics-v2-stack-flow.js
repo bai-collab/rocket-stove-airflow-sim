@@ -20,21 +20,135 @@
   const DISCHARGE_COEFFICIENT = 0.60;
   const HOT_THRESHOLD = 15;              // C above ambient
   const MAX_HOT_SEARCH_PX = 260;
-  const STACK_PRESSURE_ITERS = 30;
-  const STACK_COUPLING = 0.20;            // damping for coarse educational grid
-  const STACK_ACCEL_CAP = 280;            // px/s^2 numerical stability cap
+  const STACK_PRESSURE_ITERS = 80;
+  const STACK_OUTLET_SPEED_FRACTION = 0.28;
+  const STACK_OUTLET_SPEED_CAP = 90;
   const FIRE_PRESSURE_RADIUS = 30;
 
   const stackPressure = new Float32Array(N);
   const stackNext = new Float32Array(N);
   const fixed = new Uint8Array(N);
   const fixedValue = new Float32Array(N);
+  const boundaryU = new Float32Array(N);
+  const boundaryV = new Float32Array(N);
+  const boundaryMask = new Uint8Array(N);
+
+  let topology = null;
+  let topologyKey = '';
+  let activeHeads = [];
+  let boundaryInFlow = 0;
+  let boundaryOutFlow = 0;
+
+  function resetStackDiagnostics() {
+    stackPressure.fill(0);
+    stackNext.fill(0);
+    fixed.fill(0);
+    fixedValue.fill(0);
+    boundaryU.fill(0);
+    boundaryV.fill(0);
+    boundaryMask.fill(0);
+    activeHeads = [];
+    boundaryInFlow = 0;
+    boundaryOutFlow = 0;
+  }
+
+  const baseResetFields = resetFields;
+  resetFields = function() {
+    baseResetFields();
+    resetStackDiagnostics();
+  };
+
+  const baseRebuildSolidMask = rebuildSolidMask;
+  rebuildSolidMask = function() {
+    baseRebuildSolidMask();
+    topology = null;
+    topologyKey = '';
+    activeHeads = [];
+    boundaryInFlow = 0;
+    boundaryOutFlow = 0;
+  };
+
+  const previousResetHook = window.physicsV26ResetDiagnostics;
+  window.physicsV26ResetDiagnostics = function() {
+    if (typeof previousResetHook === 'function') previousResetHook();
+    resetStackDiagnostics();
+  };
+
+  function currentTopologyKey() {
+    let hash = 2166136261;
+    for (let i = 0; i < N; i++) {
+      hash ^= solid[i];
+      hash = Math.imul(hash, 16777619);
+    }
+    return String(hash >>> 0);
+  }
+
+  function buildFluidComponents() {
+    const componentByCell = new Int32Array(N);
+    componentByCell.fill(-1);
+    const components = [];
+    const queue = new Int32Array(N);
+
+    for (let start = 0; start < N; start++) {
+      if (solid[start] || componentByCell[start] >= 0) continue;
+      const id = components.length;
+      const cells = [];
+      const boundaryCells = [];
+      let head = 0;
+      let tail = 0;
+      componentByCell[start] = id;
+      queue[tail++] = start;
+
+      while (head < tail) {
+        const i = queue[head++];
+        const x = i % NX;
+        const y = Math.floor(i / NX);
+        cells.push(i);
+        if (x === 0 || y === 0 || x === NX - 1 || y === NY - 1) {
+          boundaryCells.push(i);
+        }
+
+        for (const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) {
+          if (nx < 0 || ny < 0 || nx >= NX || ny >= NY) continue;
+          const ni = idx(nx, ny);
+          if (solid[ni] || componentByCell[ni] >= 0) continue;
+          componentByCell[ni] = id;
+          queue[tail++] = ni;
+        }
+      }
+
+      components.push({
+        id,
+        cells,
+        boundaryCells,
+        touchesBoundary: boundaryCells.length > 0
+      });
+    }
+    return {componentByCell, components};
+  }
+
+  function getTopology() {
+    const key = currentTopologyKey();
+    if (!topology || topologyKey !== key) {
+      topology = buildFluidComponents();
+      topologyKey = key;
+    }
+    return topology;
+  }
 
   function estimateStackHead(fire) {
     const fx = fire.x + BUILD_CELL / 2;
     const fy = fire.y + BUILD_CELL / 2;
     const intensity = fireIntensity(fire);
     if (intensity <= 0) return null;
+
+    const model = getTopology();
+    const fireCell = idx(gridX(fx), gridY(fy));
+    const componentId = model.componentByCell[fireCell];
+    const component = model.components[componentId];
+    // A sealed room has no external pressure reference and must not receive
+    // an artificial stack source. Its oxygen/scalar rules still run normally.
+    if (!component || !component.touchesBoundary) return null;
 
     let maxRise = 0;
     let weightedT = 0;
@@ -81,14 +195,16 @@
     const targetMS = DISCHARGE_COEFFICIENT * Math.sqrt(2 * deltaP / RHO_AMBIENT);
     const targetPx = targetMS * PHYSICAL_PIXELS_PER_METER;
 
-    return {fx, fy, deltaP, targetPx, hotC, heightM};
+    return {fx, fy, deltaP, targetPx, hotC, heightM, componentId};
   }
 
   function buildStackPressureField() {
+    getTopology();
     stackPressure.fill(0);
     stackNext.fill(0);
     fixed.fill(0);
     fixedValue.fill(0);
+    activeHeads = [];
 
     // Ambient gauge pressure at the outer computational boundary.
     for (let x = 0; x < NX; x++) {
@@ -105,11 +221,10 @@
     }
 
     let strongestTarget = 0;
-    let active = 0;
     for (const fire of fires) {
       const head = estimateStackHead(fire);
       if (!head) continue;
-      active++;
+      activeHeads.push(head);
       strongestTarget = Math.max(strongestTarget, head.targetPx);
       const suction = -head.deltaP;
       const r2 = FIRE_PRESSURE_RADIUS * FIRE_PRESSURE_RADIUS;
@@ -131,10 +246,13 @@
       }
     }
 
-    if (!active) return 0;
+    if (!activeHeads.length) return 0;
 
-    // Laplace solve through the actual open geometry. Solid neighbors use a
-    // zero-normal-gradient condition, so pressure influence routes around walls.
+    // Solve the pressure potential through the actual open geometry. Solid
+    // neighbors use a zero-normal-gradient condition. This field is retained
+    // for diagnostics and for converting the pressure head into boundary
+    // flux; it is not applied as a second free-space gradient force, because
+    // the later incompressible projection would absorb that pure gradient.
     for (let iter = 0; iter < STACK_PRESSURE_ITERS; iter++) {
       for (let y = 0; y < NY; y++) {
         for (let x = 0; x < NX; x++) {
@@ -157,36 +275,118 @@
     return strongestTarget;
   }
 
-  function applyStackPressure(dt) {
-    const targetPx = buildStackPressureField();
-    if (targetPx <= 0) return;
-    const dxM = H / PHYSICAL_PIXELS_PER_METER;
+  function addBoundaryNormal(i, outwardSpeed) {
+    const x = i % NX;
+    const y = Math.floor(i / NX);
+    const faceCount = (x === 0 || x === NX - 1 ? 1 : 0) +
+      (y === 0 || y === NY - 1 ? 1 : 0);
+    if (!faceCount) return;
+    // A corner cell represents two boundary faces. Split the requested
+    // normal flux between them; applying the full value to both faces would
+    // create an artificial extra inlet/outlet at every corner.
+    const faceSpeed = outwardSpeed / faceCount;
+    if (x === 0) {
+      boundaryU[i] += -faceSpeed;
+      boundaryMask[i] = 1;
+    }
+    if (x === NX - 1) {
+      boundaryU[i] += faceSpeed;
+      boundaryMask[i] = 1;
+    }
+    if (y === 0) {
+      boundaryV[i] += -faceSpeed;
+      boundaryMask[i] = 1;
+    }
+    if (y === NY - 1) {
+      boundaryV[i] += faceSpeed;
+      boundaryMask[i] = 1;
+    }
+  }
 
-    for (let y = 0; y < NY; y++) {
-      for (let x = 0; x < NX; x++) {
-        const i = idx(x, y);
-        if (solid[i] || fixed[i]) continue;
-        const pc = stackPressure[i];
-        const pL = x > 0 && !solid[idx(x-1,y)] ? stackPressure[idx(x-1,y)] : pc;
-        const pR = x < NX-1 && !solid[idx(x+1,y)] ? stackPressure[idx(x+1,y)] : pc;
-        const pU = y > 0 && !solid[idx(x,y-1)] ? stackPressure[idx(x,y-1)] : pc;
-        const pD = y < NY-1 && !solid[idx(x,y+1)] ? stackPressure[idx(x,y+1)] : pc;
+  function boundaryWeight(i, head) {
+    const x = i % NX;
+    const y = Math.floor(i / NX);
+    const px = (x + 0.5) * H;
+    const py = (y + 0.5) * H;
+    const rise = head.fy - py;
+    const lateral = Math.abs(px - head.fx);
+    return Math.max(0.15, 1 + rise / MAX_HOT_SEARCH_PX - lateral / 160);
+  }
 
-        // a = -(1/rho) grad(p), converted from m/s^2 to px/s^2.
-        let ax = -((pR - pL) / (2 * dxM)) / RHO_AMBIENT * PHYSICAL_PIXELS_PER_METER;
-        let ay = -((pD - pU) / (2 * dxM)) / RHO_AMBIENT * PHYSICAL_PIXELS_PER_METER;
-        ax = clamp(ax * STACK_COUPLING, -STACK_ACCEL_CAP, STACK_ACCEL_CAP);
-        ay = clamp(ay * STACK_COUPLING, -STACK_ACCEL_CAP, STACK_ACCEL_CAP);
-        u[i] += ax * dt;
-        v[i] += ay * dt;
+  function isOutletCandidate(i, head) {
+    const x = i % NX;
+    const y = Math.floor(i / NX);
+    const px = (x + 0.5) * H;
+    const py = (y + 0.5) * H;
+    const rise = head.fy - py;
+    const lateral = Math.abs(px - head.fx);
+    return rise > H && lateral <= 55 + rise * 0.55;
+  }
 
-        // Avoid a coarse-grid pressure correction accelerating beyond the
-        // velocity scale predicted by the orifice relation.
-        const s = Math.hypot(u[i], v[i]);
-        const limit = Math.max(45, Math.min(MAX_SPEED, targetPx * 1.25));
-        if (s > limit) { u[i] = u[i] / s * limit; v[i] = v[i] / s * limit; }
+  function addBoundaryFluxForHead(head) {
+    const model = getTopology();
+    const component = model.components[head.componentId];
+    if (!component || !component.touchesBoundary) return;
+
+    let outlet = component.boundaryCells.filter(i => isOutletCandidate(i, head));
+    if (!outlet.length) {
+      const highestY = Math.min(...component.boundaryCells.map(i => Math.floor(i / NX)));
+      outlet = component.boundaryCells.filter(i => Math.floor(i / NX) === highestY);
+    }
+    const outletSet = new Set(outlet);
+    const inlet = component.boundaryCells.filter(i => !outletSet.has(i));
+    if (!outlet.length || !inlet.length) return;
+
+    const outletWeights = outlet.map(i => boundaryWeight(i, head));
+    const outletMean = outletWeights.reduce((sum, w) => sum + w, 0) / outletWeights.length;
+    const outletSpeed = clamp(
+      head.targetPx * STACK_OUTLET_SPEED_FRACTION,
+      8,
+      STACK_OUTLET_SPEED_CAP
+    );
+    let totalFlux = 0;
+    for (let k = 0; k < outlet.length; k++) {
+      const speed = outletSpeed * outletWeights[k] / Math.max(0.1, outletMean);
+      addBoundaryNormal(outlet[k], speed);
+      totalFlux += speed;
+    }
+
+    const inletWeights = inlet.map(i => Math.max(0.20, 1 / (1 + Math.abs(Math.floor(i / NX) - Math.floor(head.fy / H)) * 0.04)));
+    const inletWeightSum = inletWeights.reduce((sum, w) => sum + w, 0);
+    for (let k = 0; k < inlet.length; k++) {
+      const speed = -totalFlux * inletWeights[k] / Math.max(1e-6, inletWeightSum);
+      addBoundaryNormal(inlet[k], speed);
+    }
+  }
+
+  function updateBoundaryFlux() {
+    boundaryU.fill(0);
+    boundaryV.fill(0);
+    boundaryMask.fill(0);
+    for (const head of activeHeads) addBoundaryFluxForHead(head);
+
+    boundaryInFlow = 0;
+    boundaryOutFlow = 0;
+    const model = getTopology();
+    for (const component of model.components) {
+      if (!component.touchesBoundary) continue;
+      for (const i of component.boundaryCells) {
+        const x = i % NX;
+        const y = Math.floor(i / NX);
+        let outward = 0;
+        if (x === 0) outward += -boundaryU[i];
+        if (x === NX - 1) outward += boundaryU[i];
+        if (y === 0) outward += -boundaryV[i];
+        if (y === NY - 1) outward += boundaryV[i];
+        if (outward >= 0) boundaryOutFlow += outward;
+        else boundaryInFlow += -outward;
       }
     }
+  }
+
+  function updateStackFlow() {
+    buildStackPressureField();
+    updateBoundaryFlux();
   }
 
   // Correct the visual/physical length scale of the existing Boussinesq force.
@@ -203,7 +403,56 @@
         v[i] += (-G * BETA * dT * extraPPM) * dt;
       }
     }
-    applyStackPressure(dt);
+    updateStackFlow();
+  };
+
+  const metricsPanel = document.querySelector('.panel.metrics');
+  const advancedMetrics = document.getElementById('advancedMetrics');
+  let stackPressureEl = null;
+  let stackHeightEl = null;
+  let stackFluxEl = null;
+  const metricsTarget = advancedMetrics || metricsPanel;
+  if (metricsTarget) {
+    const addCard = (label, id) => {
+      const card = document.createElement('div');
+      card.className = 'metric-card';
+      card.innerHTML = `<span>${label}</span><strong id="${id}">—</strong>`;
+      metricsTarget.appendChild(card);
+      return card.querySelector(`#${id}`);
+    };
+    stackPressureEl = addCard('煙囪壓差（表壓）', 'stackPressureValue');
+    stackHeightEl = addCard('有效熱柱高度', 'stackHeightValue');
+    stackFluxEl = addCard('邊界通量（進／出）', 'stackFluxValue');
+  }
+
+  const baseUpdateMetrics = updateMetrics;
+  updateMetrics = function() {
+    baseUpdateMetrics();
+    const strongest = activeHeads.reduce((best, head) => head.deltaP > best.deltaP ? head : best, {deltaP: 0, heightM: 0});
+    if (stackPressureEl) stackPressureEl.textContent = `${strongest.deltaP.toFixed(2)} Pa`;
+    if (stackHeightEl) stackHeightEl.textContent = `${(strongest.heightM * 100).toFixed(0)} cm`;
+    if (stackFluxEl) stackFluxEl.textContent = `${boundaryInFlow.toFixed(1)} ／ ${boundaryOutFlow.toFixed(1)} px²/s`;
+  };
+
+  window.stackFlowV26 = {
+    boundaryU,
+    boundaryV,
+    boundaryMask,
+    pressureField: stackPressure,
+    get activeHeads() {
+      return activeHeads.map(head => ({
+        deltaP: head.deltaP,
+        targetPx: head.targetPx,
+        hotC: head.hotC,
+        heightM: head.heightM,
+        componentId: head.componentId
+      }));
+    },
+    get boundaryInFlow() { return boundaryInFlow; },
+    get boundaryOutFlow() { return boundaryOutFlow; },
+    get openComponents() { return getTopology().components.filter(c => c.touchesBoundary).length; },
+    get sealedComponents() { return getTopology().components.filter(c => !c.touchesBoundary).length; },
+    reset: resetStackDiagnostics
   };
 
   // Stratified tracer seeding.  This changes only visualization: it does not

@@ -773,13 +773,24 @@ clearBtn.addEventListener('click', () => {
   pauseBtn.textContent = '暫停';
   flowScoreEl.textContent = avgSpeedEl.textContent = stagnantRateEl.textContent = '—';
   if (oxygenRateEl) oxygenRateEl.textContent = '—';
+  if (typeof window.physicsV26ResetDiagnostics === 'function') window.physicsV26ResetDiagnostics();
+  for (const id of [
+    'continuityValue', 'stackPressureValue', 'stackHeightValue', 'stackFluxValue',
+    'pressureResidualValue', 'projectedFluxValue', 'particleStatus', 'boundaryAirRate',
+    'boundaryTopology', 'boundaryDensity', 'boundaryBandStatus', 'secondaryBurnRate',
+    'unburnedGasRate', 'smokeLevelRate', 'smokeOutRate', 'ashRate', 'ashFate'
+  ]) {
+    const metric = document.getElementById(id);
+    if (metric) metric.textContent = '—';
+  }
   feedbackEl.textContent = 'Physics v2 已重置。先建立爐體，再按「點火」。';
 });
 
 particleSlider.addEventListener('input', () => {
   const target = targetParticleCount();
   if (particles.length > target) {
-    particles.length = target;
+    if (window.tracerV25?.trimOpenPopulation) window.tracerV25.trimOpenPopulation(target);
+    else particles.length = target;
   } else {
     while (particles.length < target) {
       const p = ignited ? boundarySpawnForFlow() : randomOpenPoint();

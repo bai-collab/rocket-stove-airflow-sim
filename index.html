@@ -4,26 +4,43 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>火箭爐空氣流動模擬器</title>
-  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/style.css?v=20260826-4" />
 </head>
 <body>
   <main class="app-shell">
-    <header class="topbar"><div><h1>火箭爐空氣流動模擬器</h1><p>設計 → 點火 → 觀察 → 修改 → 再測試</p></div><div class="notice">Physics v2.5.2 教學用近似模型，不代表工程 CFD 或真實排放結果</div></header>
+    <header class="topbar"><div><h1>火箭爐空氣流動模擬器</h1><p>設計 → 點火 → 觀察 → 修改 → 再測試</p></div><div class="notice">Physics v2.6 教學用近似模型，不代表工程 CFD 或真實排放結果</div></header>
     <section class="workspace">
-      <aside class="panel tools"><h2>1. 建造火箭爐</h2><div class="tool-grid" role="group" aria-label="建造工具"><button class="tool active" data-tool="wall">磚塊／爐壁</button><button class="tool" data-tool="fire">稻稈火源</button><button class="tool" data-tool="fan">電風扇</button><button class="tool" data-tool="erase">橡皮擦</button></div><p class="hint">火源預設為正在燃燒的稻稈。爐壁留下的開口就是實際進排氣通道，不需要另外放進氣口或煙囪標記。</p><h2>2. 測試</h2><div class="action-stack"><button id="igniteBtn" class="primary">🔥 點火</button><button id="pauseBtn">暫停</button><button id="clearBtn">全部清除</button></div><label class="range-label" for="particleCount">示蹤粒子數</label><input id="particleCount" type="range" min="80" max="500" step="20" value="240" /><label class="range-label" for="fanPressure">風扇壓升 <output id="fanPressureValue">2.0 Pa</output></label><input id="fanPressure" type="range" min="0" max="5" step="0.5" value="2" /><div class="legend"><span><i class="dot air"></i> 藍：新鮮空氣示蹤（同一股氣流帶入氧氣）</span><span><i class="dot heat"></i> 橘：受熱空氣示蹤</span><span><i class="dot exhaust"></i> 灰：燃燒後氣體示蹤</span><span>深灰霧：稻稈不完全燃燒的相對黑煙</span><span><i class="box wall"></i> 磚牆</span></div></aside>
-      <section class="simulation-card"><canvas id="simCanvas" width="900" height="560" aria-label="火箭爐氣流模擬畫布"></canvas><p class="hint">Physics v2.5.2：藍色點只是新鮮空氣的流向示蹤，不是氧氣分子；真正控制助燃的是氧氣濃度場。稻稈氧氣不足時黑煙增加，進氣改善一次燃燒；高溫煙氣再得到氧氣並充分混合時，可發生二次燃燒而進一步減少黑煙。</p></section>
-      <aside class="panel metrics"><h2>3. 觀察結果</h2><div class="metric-card"><span>氣流順暢度</span><strong id="flowScore">—</strong></div><div class="metric-card"><span>平均氣流速度</span><strong id="avgSpeed">—</strong></div><div class="metric-card"><span>停滯流場比例</span><strong id="stagnantRate">—</strong></div><div class="metric-card"><span>燃燒區相對氧氣</span><strong id="oxygenRate">—</strong></div><div id="feedback" class="feedback">Physics v2.5.2 已載入：稻稈黑煙與燃燒後氣體已分開建模，氧氣只作為助燃條件。</div></aside>
+      <aside class="panel tools"><h2>1. 建造火箭爐</h2><div class="tool-grid" role="group" aria-label="建造工具"><button class="tool active" data-tool="wall">磚塊／爐壁</button><button class="tool" data-tool="fire">稻稈火源</button><button class="tool" data-tool="fan">電風扇</button><button class="tool" data-tool="erase">橡皮擦</button></div><p class="hint">火源預設為正在燃燒的稻稈。爐壁留下的開口就是實際進排氣通道，不需要另外放進氣口或煙囪標記。開放區的空氣示蹤會由畫布邊界補入；密閉區不補入。</p><h2>2. 測試</h2><div class="action-stack"><button id="igniteBtn" class="primary">🔥 點火</button><button id="pauseBtn">暫停</button><button id="clearBtn">全部清除</button></div><label class="range-label" for="particleCount">示蹤粒子數（開放區基準）</label><input id="particleCount" type="range" min="80" max="500" step="20" value="240" /><label class="range-label" for="fanPressure">風扇壓升 <output id="fanPressureValue">2.0 Pa</output></label><input id="fanPressure" type="range" min="0" max="5" step="0.5" value="2" /><div class="legend"><span><i class="dot air"></i> 藍：新鮮空氣示蹤（同一股氣流帶入氧氣）</span><span><i class="dot heat"></i> 橘：受熱空氣示蹤</span><span><i class="dot exhaust"></i> 灰：燃燒後氣體示蹤</span><span><i class="dot ash"></i> 棕：稻稈礦物灰（不可燃）；深棕／淡棕細點：焦渣／飛灰</span><span>深灰霧：稻稈不完全燃燒的相對黑煙</span><span><i class="box wall"></i> 磚牆</span></div></aside>
+      <section class="simulation-card"><canvas id="simCanvas" width="900" height="560" aria-label="火箭爐氣流模擬畫布"></canvas><p class="hint">Physics v2.6：藍色點只是新鮮空氣的流向示蹤，不是氧氣分子；真正控制助燃的是氧氣濃度場。每格壓力會先投影速度，再由開放邊界的進、出通量維持空氣守恆；粒子真正離開畫布才會由同一開放區重返。密閉區不會硬塞外部粒子。稻稈氧氣不足時黑煙增加；高溫煙氣再得到氧氣並充分混合、停留足夠時間時，才會發生二次燃燒。預設中的藍色箭頭是二次空氣槽，會在槽口附近補入環境空氣。棕色點是礦物灰，深棕細點是可燃焦渣，淡棕細點是高速氣流帶起的飛灰，深棕短線是已沉積礦物灰。三種預設降低的是黑煙／未燃焦渣／飛灰外逸，不是把礦物灰燒掉。</p><section class="preset-panel" aria-labelledby="presetHeading"><h2 id="presetHeading">快速載入三種爐型</h2><p class="preset-lead">三種設計都預留二次空氣、混合與停留路徑；二次燃燒可降低黑煙／未燃氣體與飛灰外逸，但不可把不可燃灰分燒掉。</p><div class="preset-grid" role="group" aria-label="火箭爐構造預設"><button type="button" class="preset-button" data-stove-preset="straight"><span class="preset-code">A</span><span class="preset-title">垂直升火筒</span><small>雙側二次空氣槽・煙囪自然抽力</small></button><button type="button" class="preset-button" data-stove-preset="baffle"><span class="preset-code">B</span><span class="preset-title">Z 型折流爐</span><small>延長高溫混合與停留</small></button><button type="button" class="preset-button" data-stove-preset="twin-channel"><span class="preset-code">C</span><span class="preset-title">雙通道預熱爐</span><small>側壁預熱・上置混合室</small></button></div><p id="presetStatus" class="preset-status" aria-live="polite">選一種爐型後按「點火」；右側指標會顯示二次燃燒、邊界補氣與灰分去向。</p></section></section>
+      <aside class="panel metrics">
+        <h2>3. 觀察結果</h2>
+        <section id="primaryMetrics" class="metrics-primary" aria-labelledby="primaryMetricsHeading">
+          <h3 id="primaryMetricsHeading" class="metrics-subheading">學生觀察指標</h3>
+          <div class="metric-card"><span>氣流順暢度</span><strong id="flowScore">—</strong></div>
+          <div class="metric-card"><span>平均氣流速度</span><strong id="avgSpeed">—</strong></div>
+          <div class="metric-card"><span>燃燒區相對氧氣</span><strong id="oxygenRate">—</strong></div>
+        </section>
+        <details id="advancedDiagnostics" class="metrics-advanced">
+          <summary>進階診斷資訊</summary>
+          <div id="advancedMetrics" class="metrics-advanced-body">
+            <div class="metric-card"><span>停滯流場比例</span><strong id="stagnantRate">—</strong></div>
+            <div id="feedback" class="feedback">Physics v2.6 已載入：壓力投影、開放邊界進出通量、空氣示蹤分布、二次燃燒與稻稈灰分去向分開顯示。</div>
+          </div>
+        </details>
+      </aside>
     </section>
-    <section class="teacher-note"><h2>學生觀察重點</h2><ul><li>稻稈火源附近的新鮮空氣流入增加時，「燃燒區相對氧氣」是否提高，而「相對黑煙濃度」降低？</li><li>藍色粒子只是空氣流向示蹤；黑煙是稻稈不完全燃燒產物，兩者不是同一種物質。</li><li>完全封閉時，氧氣是否持續下降、黑煙與燃燒後氣體是否留在封閉區內，最後使火勢降低或熄滅？</li><li>深灰黑煙可因二次燃燒減少，但較淡的燃燒後氣體不能在密閉區域憑空消失。</li><li>若在火焰上方保留適當開口，新鮮空氣是否能進入高溫煙氣區，使二次燃燒增加、黑煙進一步降低？</li><li>增加開口不一定越多越好：冷空氣過量時，是否可能降低高溫區溫度與二次燃燒？</li></ul></section>
+    <section class="teacher-note"><h2>學生觀察重點</h2><ul><li>稻稈火源附近的新鮮空氣流入增加時，「燃燒區相對氧氣」是否提高，而「相對黑煙濃度」降低？</li><li>藍色粒子只是空氣流向示蹤；黑煙是稻稈不完全燃燒產物，棕色是不可燃礦物灰，深棕是可燃焦渣，淡棕是飛灰；它們不是同一種物質。</li><li>開放連通區的補氣量由「粒子缺口鬆弛」和「邊界向內通量 × 每格示蹤密度」共同決定；密閉區沒有外部補氣。</li><li>看「煙囪壓差」與「邊界通量（進／出）」是否同時增加，而且進、出量大致相等？這表示空氣是由外界補入再排出，不是被抽真空。</li><li>完全封閉時，氧氣是否持續下降、黑煙與燃燒後氣體是否留在封閉區內，最後使火勢降低或熄滅？</li><li>深灰黑煙可因二次燃燒減少，焦渣也可能被燒掉；但礦物灰不會因燃燒消失，只能沉積、排出或被清除。</li><li>若在火焰上方保留適當開口，新鮮空氣是否能進入高溫煙氣區，使二次燃燒增加、黑煙進一步降低？</li><li>增加開口不一定越多越好：冷空氣過量時，是否可能降低高溫區溫度與二次燃燒？</li></ul></section>
   </main>
-  <script src="js/app-v2.js?v=20260825-1"></script>
+  <script src="js/app-v2.js?v=20260826-4"></script>
   <script src="js/physics-v2-plume-fix.js?v=20260825-2"></script>
-  <script src="js/physics-v2-stack-flow.js?v=20260825-3"></script>
-  <script src="js/physics-v2-fan-duct.js?v=20260825-8"></script>
+  <script src="js/physics-v2-stack-flow.js?v=20260826-5"></script>
+  <script src="js/physics-v2-fan-duct.js?v=20260826-1"></script>
   <script src="js/physics-v2-continuity.js?v=20260825-6"></script>
+  <script src="js/physics-v2-conservation.js?v=20260826-3"></script>
   <script src="js/physics-v2-temperature-heatmap.js?v=20260825-1"></script>
-  <script src="js/physics-v2-tracer-recycle.js?v=20260825-10"></script>
-  <script src="js/physics-v2-secondary-combustion.js?v=20260825-2"></script>
-  <script src="js/physics-v2-closed-scalar.js?v=20260825-1"></script>
+  <script src="js/physics-v2-tracer-recycle.js?v=20260826-5"></script>
+  <script src="js/physics-v2-secondary-combustion.js?v=20260826-5"></script>
+  <script src="js/physics-v2-closed-scalar.js?v=20260826-2"></script>
+  <script src="js/rocket-stove-presets.js?v=20260826-2"></script>
 </body>
 </html>

@@ -149,13 +149,14 @@
 
   // Add an educational diagnostic card without changing the physical solver.
   const metricsPanel = document.querySelector('.panel.metrics');
+  const advancedMetrics = document.getElementById('advancedMetrics');
   let continuityValueEl = null;
-  if (metricsPanel) {
+  const metricsTarget = advancedMetrics || metricsPanel;
+  if (metricsTarget) {
     const card = document.createElement('div');
     card.className = 'metric-card';
     card.innerHTML = '<span>縮口連續方程式</span><strong id="continuityValue">—</strong>';
-    const feedback = document.getElementById('feedback');
-    metricsPanel.insertBefore(card, feedback || null);
+    metricsTarget.appendChild(card);
     continuityValueEl = card.querySelector('#continuityValue');
   }
 

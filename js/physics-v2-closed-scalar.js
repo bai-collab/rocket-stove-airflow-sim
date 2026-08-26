@@ -41,6 +41,38 @@
     return 'fluid';
   }
 
+  function sampleFluidField(field, px, py, fallback = 0) {
+    if (!inCanvas(px, py) || isSolidPoint(px, py)) return fallback;
+
+    const gxFloat = px / H - 0.5;
+    const gyFloat = py / H - 0.5;
+    const x0 = Math.floor(gxFloat);
+    const y0 = Math.floor(gyFloat);
+    const tx = gxFloat - x0;
+    const ty = gyFloat - y0;
+    let sum = 0;
+    let weightSum = 0;
+
+    for (let oy = 0; oy <= 1; oy++) {
+      for (let ox = 0; ox <= 1; ox++) {
+        const x = x0 + ox;
+        const y = y0 + oy;
+        if (x < 0 || y < 0 || x >= NX || y >= NY) continue;
+        const weight = (ox ? tx : 1 - tx) * (oy ? ty : 1 - ty);
+        if (weight <= 0) continue;
+        const i = idx(x, y);
+        if (solid[i]) continue;
+        // Bilinear interpolation can otherwise select a fluid cell on the
+        // opposite side of a two-cell brick wall. Keep only samples with a
+        // clear segment from the back-traced point to that cell centre.
+        if (!lineClear(px, py, (x + 0.5) * H, (y + 0.5) * H, false)) continue;
+        sum += field[i] * weight;
+        weightSum += weight;
+      }
+    }
+    return weightSum > 1e-6 ? sum / weightSum : fallback;
+  }
+
   function buildFluidComponents() {
     const labels = new Int32Array(N);
     labels.fill(-1);
@@ -198,7 +230,7 @@
         } else {
           // If bilinear interpolation happens to have no fluid neighbor near a
           // wall, fall back to this cell's prior value, not ambient/zero.
-          dst[i] = sampleField(src, bx, by, src[i]);
+          dst[i] = sampleFluidField(src, bx, by, src[i]);
         }
       }
     }
