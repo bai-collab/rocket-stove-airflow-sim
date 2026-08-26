@@ -26,6 +26,12 @@ import {
 const MIN_INFLOW = 0.03;
 const EDGE_INSET = 2.5;
 const TRACE_STEP = Math.max(2, H * 0.35);
+const MAX_PER_CELL = 5;
+// The existing open-area tracer-density metric uses the H-sized simulation grid.
+const DENSITY_CELL_PX = H;
+const DENSITY_NX = Math.ceil(CANVAS_WIDTH / DENSITY_CELL_PX);
+const DENSITY_NY = Math.ceil(CANVAS_HEIGHT / DENSITY_CELL_PX);
+const DENSITY_CELL_COUNT = DENSITY_NX * DENSITY_NY;
 const PARTICLE_SOURCE_TAU = 0.85;
 const BOUNDARY_FLOW_REFERENCE = 240;
 const BACKGROUND_BOUNDARY_WEIGHT = 0.22;
@@ -140,6 +146,148 @@ function getBoundaryModel() {
 function componentAtPoint(x, y) {
   if (!inCanvas(x, y)) return -1;
   return getBoundaryModel().componentByCell[idx(gridX(x), gridY(y))];
+}
+
+function densityCellAtPoint(x, y) {
+  if (!inCanvas(x, y)) return -1;
+  const cellX = Math.floor(x / DENSITY_CELL_PX);
+  const cellY = Math.floor(y / DENSITY_CELL_PX);
+  if (cellX < 0 || cellY < 0 || cellX >= DENSITY_NX || cellY >= DENSITY_NY) return -1;
+  return cellY * DENSITY_NX + cellX;
+}
+
+function buildTracerDensityOccupancy() {
+  const occupancy = new Uint16Array(DENSITY_CELL_COUNT);
+  for (const p of particles) {
+    const cell = densityCellAtPoint(p.x, p.y);
+    if (cell >= 0) occupancy[cell]++;
+  }
+  return occupancy;
+}
+
+function densityPointHasCapacity(point, occupancy) {
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
+  const cell = densityCellAtPoint(point.x, point.y);
+  return cell >= 0 && !isSolidPoint(point.x, point.y) && occupancy[cell] < MAX_PER_CELL;
+}
+
+function recordDensityMove(occupancy, startX, startY, endX, endY) {
+  const startCell = densityCellAtPoint(startX, startY);
+  const endCell = densityCellAtPoint(endX, endY);
+  if (startCell === endCell) return;
+  if (startCell >= 0 && occupancy[startCell] > 0) occupancy[startCell]--;
+  if (endCell >= 0) occupancy[endCell]++;
+}
+
+function openPointInDensityCell(cellX, cellY, anchorX, anchorY) {
+  const cellMinX = cellX * DENSITY_CELL_PX;
+  const cellMinY = cellY * DENSITY_CELL_PX;
+  const cellMaxX = Math.min(CANVAS_WIDTH, (cellX + 1) * DENSITY_CELL_PX);
+  const cellMaxY = Math.min(CANVAS_HEIGHT, (cellY + 1) * DENSITY_CELL_PX);
+  const insetX = Math.min(EDGE_INSET, (cellMaxX - cellMinX) * 0.25);
+  const insetY = Math.min(EDGE_INSET, (cellMaxY - cellMinY) * 0.25);
+  const minX = cellMinX + insetX;
+  const maxX = cellMaxX - insetX;
+  const minY = cellMinY + insetY;
+  const maxY = cellMaxY - insetY;
+  const xCandidates = [clamp(anchorX, minX, maxX), (minX + maxX) * 0.5, minX, maxX];
+  const yCandidates = [clamp(anchorY, minY, maxY), (minY + maxY) * 0.5, minY, maxY];
+
+  for (const x of xCandidates) {
+    for (const y of yCandidates) {
+      if (!inCanvas(x, y) || isSolidPoint(x, y)) continue;
+      if (densityCellAtPoint(x, y) !== cellY * DENSITY_NX + cellX) continue;
+      if (!lineClear(anchorX, anchorY, x, y, false)) continue;
+      return {x, y};
+    }
+  }
+  return null;
+}
+
+function tryAdjacentDeflection(x, y, flowX, flowY, occupancy, initialCell) {
+  const currentCell = densityCellAtPoint(x, y);
+  if (currentCell < 0) return null;
+  const cellX = currentCell % DENSITY_NX;
+  const cellY = Math.floor(currentCell / DENSITY_NX);
+  const flowLength = Math.hypot(flowX, flowY);
+  const perpendicularX = flowLength > 1e-6 ? -flowY / flowLength : 0;
+  const perpendicularY = flowLength > 1e-6 ? flowX / flowLength : 0;
+  const directions = [
+    {x: -1, y: 0, order: 0},
+    {x: 1, y: 0, order: 1},
+    {x: 0, y: -1, order: 2},
+    {x: 0, y: 1, order: 3}
+  ];
+
+  directions.sort((a, b) => {
+    const aPerpendicular = Math.abs(a.x * perpendicularX + a.y * perpendicularY);
+    const bPerpendicular = Math.abs(b.x * perpendicularX + b.y * perpendicularY);
+    if (bPerpendicular !== aPerpendicular) return bPerpendicular - aPerpendicular;
+    const aBackward = flowLength > 1e-6
+      ? -(a.x * flowX + a.y * flowY) / flowLength
+      : 0;
+    const bBackward = flowLength > 1e-6
+      ? -(b.x * flowX + b.y * flowY) / flowLength
+      : 0;
+    if (bBackward !== aBackward) return bBackward - aBackward;
+    return a.order - b.order;
+  });
+
+  for (const direction of directions) {
+    const nextCellX = cellX + direction.x;
+    const nextCellY = cellY + direction.y;
+    if (nextCellX < 0 || nextCellY < 0 || nextCellX >= DENSITY_NX || nextCellY >= DENSITY_NY) continue;
+    const nextCell = nextCellY * DENSITY_NX + nextCellX;
+    const otherParticleCount = occupancy[nextCell] - (nextCell === initialCell ? 1 : 0);
+    if (otherParticleCount >= MAX_PER_CELL) continue;
+    const point = openPointInDensityCell(nextCellX, nextCellY, x, y);
+    if (point) return {cell: nextCell, x: point.x, y: point.y};
+  }
+  return null;
+}
+
+function resolveDensityMove(x, y, nextX, nextY, flowX, flowY, occupancy, initialCell, allowBoundaryExit) {
+  const currentCell = densityCellAtPoint(x, y);
+  const nextCell = densityCellAtPoint(nextX, nextY);
+  if (allowBoundaryExit || currentCell < 0 || nextCell < 0 || currentCell === nextCell) {
+    return {kind: 'move'};
+  }
+
+  const otherParticleCount = occupancy[nextCell] - (nextCell === initialCell ? 1 : 0);
+  if (otherParticleCount < MAX_PER_CELL) return {kind: 'move'};
+
+  const deflection = tryAdjacentDeflection(x, y, flowX, flowY, occupancy, initialCell);
+  return deflection ? {kind: 'deflect', ...deflection} : {kind: 'block'};
+}
+
+function healTracerDensity(occupancy) {
+  for (let cell = 0; cell < DENSITY_CELL_COUNT; cell++) {
+    if (occupancy[cell] <= MAX_PER_CELL) continue;
+
+    for (const p of particles) {
+      if (occupancy[cell] <= MAX_PER_CELL) break;
+      if (densityCellAtPoint(p.x, p.y) !== cell) continue;
+
+      const flow = sampleVelocitySafe(p.x, p.y);
+      const deflection = tryAdjacentDeflection(
+        p.x,
+        p.y,
+        flow.x,
+        flow.y,
+        occupancy,
+        cell
+      );
+      if (!deflection) continue;
+
+      recordDensityMove(occupancy, p.x, p.y, deflection.x, deflection.y);
+      p.x = deflection.x;
+      p.y = deflection.y;
+      p.vx = 0;
+      p.vy = 0;
+      p.prevX = p.x;
+      p.prevY = p.y;
+    }
+  }
 }
 
 function isBoundaryBandCell(cell) {
@@ -322,6 +470,20 @@ function weightedPick(candidates) {
   return jitterSpawn(q);
 }
 
+function weightedPickWithCapacity(candidates, occupancy) {
+  const available = candidates.filter(q => {
+    const cell = densityCellAtPoint(q.x, q.y);
+    return cell >= 0 && !isSolidPoint(q.x, q.y) && occupancy[cell] < MAX_PER_CELL;
+  });
+  if (!available.length) return null;
+
+  for (let attempt = 0; attempt < available.length * 2; attempt++) {
+    const q = weightedPick(available);
+    if (densityPointHasCapacity(q, occupancy)) return q;
+  }
+  return null;
+}
+
 function jitterSpawn(q) {
   const p = {
     x: clamp(q.x + (Math.random() - 0.5) * H * 0.65, EDGE_INSET, CANVAS_WIDTH - EDGE_INSET),
@@ -381,42 +543,90 @@ function sampleVelocitySafe(px, py) {
   return solid[i] ? {x: 0, y: 0} : {x: u[i], y: v[i]};
 }
 
-function moveTracer(p, dx, dy) {
+function moveTracer(p, dx, dy, occupancy) {
+  const startX = p.x;
+  const startY = p.y;
+  const initialCell = densityCellAtPoint(startX, startY);
+  let currentX = startX;
+  let currentY = startY;
+  const advectedEndLeavesCanvas = !inCanvas(startX + dx, startY + dy);
   const distance = Math.hypot(dx, dy);
   const steps = Math.max(1, Math.ceil(distance / TRACE_STEP));
   const stepX = dx / steps, stepY = dy / steps;
 
   for (let step = 0; step < steps; step++) {
-    const startX = p.x, startY = p.y;
-    const targetX = startX + stepX, targetY = startY + stepY;
-    if (!inCanvas(targetX, targetY)) return false;
-
-    const canX = !isSolidPoint(targetX, startY) &&
-      lineClear(startX, startY, targetX, startY, false);
-    const canY = !isSolidPoint(startX, targetY) &&
-      lineClear(startX, startY, startX, targetY, false);
-    const canDiagonal = !isSolidPoint(targetX, targetY) &&
-      lineClear(startX, startY, targetX, targetY, false);
-
-    if (canDiagonal) {
+    const targetX = currentX + stepX, targetY = currentY + stepY;
+    // Boundary exit is resolved before density exclusion so a real exit can
+    // never be blocked by a full visual cell.
+    if (!inCanvas(targetX, targetY)) {
       p.x = targetX;
       p.y = targetY;
+      recordDensityMove(occupancy, startX, startY, targetX, targetY);
+      return false;
+    }
+
+    const canX = !isSolidPoint(targetX, currentY) &&
+      lineClear(currentX, currentY, targetX, currentY, false);
+    const canY = !isSolidPoint(currentX, targetY) &&
+      lineClear(currentX, currentY, currentX, targetY, false);
+    const canDiagonal = !isSolidPoint(targetX, targetY) &&
+      lineClear(currentX, currentY, targetX, targetY, false);
+
+    let nextX = currentX;
+    let nextY = currentY;
+
+    if (canDiagonal) {
+      nextX = targetX;
+      nextY = targetY;
     } else {
       if (Math.abs(stepX) >= Math.abs(stepY)) {
-        if (canX) p.x = targetX;
-        else if (canY) p.y = targetY;
+        if (canX) nextX = targetX;
+        else if (canY) nextY = targetY;
       } else if (canY) {
-        p.y = targetY;
+        nextY = targetY;
       } else if (canX) {
-        p.x = targetX;
+        nextX = targetX;
       }
       if (!canX && !canY) {
         p.vx = 0;
         p.vy = 0;
-        return true;
+        break;
       }
     }
+
+    if (nextX === currentX && nextY === currentY) continue;
+    const densityMove = resolveDensityMove(
+      currentX,
+      currentY,
+      nextX,
+      nextY,
+      dx,
+      dy,
+      occupancy,
+      initialCell,
+      advectedEndLeavesCanvas
+    );
+    if (densityMove.kind === 'block') {
+      // Make the whole attempted step transactional: a blocked tracer keeps
+      // its position from the beginning of this update, with no displacement.
+      p.x = startX;
+      p.y = startY;
+      p.vx = 0;
+      p.vy = 0;
+      return true;
+    }
+    if (densityMove.kind === 'deflect') {
+      currentX = densityMove.x;
+      currentY = densityMove.y;
+      break;
+    }
+    currentX = nextX;
+    currentY = nextY;
   }
+
+  p.x = currentX;
+  p.y = currentY;
+  recordDensityMove(occupancy, startX, startY, currentX, currentY);
   return true;
 }
 
@@ -477,7 +687,7 @@ function refreshComponentPopulations(model, target) {
   return {openComponents, cellCounts};
 }
 
-function replenishOpenBoundary(dt) {
+function replenishOpenBoundary(dt, occupancy) {
   const model = getBoundaryModel();
   const target = targetParticleCount();
   const population = refreshComponentPopulations(model, target);
@@ -506,10 +716,12 @@ function replenishOpenBoundary(dt) {
 
     const choices = componentCandidates(candidates, component.id);
     while (component.sourceAccumulator >= 1 && choices.length) {
-      const q = weightedPick(choices);
+      const q = weightedPickWithCapacity(choices, occupancy);
       if (!q) break;
       particles.push(makeTracer(q));
       component.particleCount++;
+      const cell = densityCellAtPoint(q.x, q.y);
+      if (cell >= 0) occupancy[cell]++;
       component.sourceAccumulator -= 1;
       boundaryInjectedCount++;
     }
@@ -518,10 +730,10 @@ function replenishOpenBoundary(dt) {
     }
   }
 
-  rebalanceBoundaryBand(model, openComponents, candidates, population.cellCounts);
+  rebalanceBoundaryBand(model, openComponents, candidates, population.cellCounts, occupancy);
 }
 
-function rebalanceBoundaryBand(model, openComponents, candidates, cellCounts) {
+function rebalanceBoundaryBand(model, openComponents, candidates, cellCounts, occupancy) {
   let remaining = MAX_DENSITY_RESAMPLES_PER_STEP;
   if (remaining <= 0) return;
 
@@ -534,8 +746,9 @@ function rebalanceBoundaryBand(model, openComponents, candidates, cellCounts) {
     const choices = componentCandidates(candidates, component.id);
     while (deficit > 0 && remaining > 0 && choices.length) {
       const donor = findOverrepresentedTracer(component, cellCounts);
-      const q = weightedPick(choices);
+      const q = weightedPickWithCapacity(choices, occupancy);
       if (!donor || !q) break;
+      recordDensityMove(occupancy, donor.x, donor.y, q.x, q.y);
       donor.x = q.x;
       donor.y = q.y;
       donor.vx = 0;
@@ -567,38 +780,38 @@ function findOverrepresentedTracer(component, cellCounts) {
   return best;
 }
 
-export function trimOpenPopulation(target) {
-  const model = getBoundaryModel();
-  let openCount = 0;
-  for (const p of particles) {
-    const componentId = componentAtPoint(p.x, p.y);
-    if (componentId >= 0 && model.components[componentId].touchesBoundary) openCount++;
-  }
-  let excess = Math.max(0, openCount - target);
-  if (!excess) return;
+export function trimOpenPopulation() {
+  // Kept as a compatibility hook for the particle-count control. Runtime
+  // tracers are never trimmed: an in-canvas particle may only leave at the
+  // canvas boundary and then be respawned by resetAfterTrueExit().
+  return particles.length;
+}
 
-  const kept = [];
-  for (const p of particles) {
-    const componentId = componentAtPoint(p.x, p.y);
-    const isOpen = componentId >= 0 && model.components[componentId].touchesBoundary;
-    if (isOpen && excess > 0) {
-      excess--;
+function replenishTargetPopulation(target, occupancy) {
+  const deficit = Math.max(0, target - particles.length);
+  let attempts = 0;
+  const maxAttempts = Math.max(32, deficit * 8);
+
+  while (particles.length < target && attempts < maxAttempts) {
+    attempts++;
+    const q = ignited ? boundarySpawnForFlow() : randomOpenPoint();
+    // An ignited top-up must use the same boundary candidates as the regular
+    // source.  Do not fall back to a random sealed component.
+    if (!q) {
+      if (ignited) break;
       continue;
     }
-    kept.push(p);
+    if (!densityPointHasCapacity(q, occupancy)) continue;
+    particles.push(makeTracer(q));
+    occupancy[densityCellAtPoint(q.x, q.y)]++;
   }
-  setParticles(kept);
 }
 
 export function updateTracers(dt) {
   const target = targetParticleCount();
+  const occupancy = buildTracerDensityOccupancy();
 
-  trimOpenPopulation(target);
-  while (particles.length < target) {
-    const q = ignited ? boundarySpawnForFlow() : randomOpenPoint();
-    const p = makeTracer(q || randomOpenPoint());
-    particles.push(p);
-  }
+  replenishTargetPopulation(target, occupancy);
 
   for (const p of particles) {
     if (!Number.isFinite(p.prevX) || !Number.isFinite(p.prevY)) {
@@ -612,13 +825,20 @@ export function updateTracers(dt) {
     p.vx = Number.isFinite(vel.x) ? vel.x : 0;
     p.vy = Number.isFinite(vel.y) ? vel.y : 0;
 
-    if (!Number.isFinite(p.vx) || !Number.isFinite(p.vy) ||
-        !moveTracer(p, p.vx * dt, p.vy * dt)) {
+    if (!Number.isFinite(vel.x) || !Number.isFinite(vel.y)) {
+      // Invalid sampled velocity cannot identify a boundary exit. Hold the
+      // tracer in place so only an actual canvas crossing can recycle it.
+      p.vx = 0;
+      p.vy = 0;
+    } else if (!moveTracer(p, p.vx * dt, p.vy * dt, occupancy)) {
       resetAfterTrueExit(p, componentId);
+      const cell = densityCellAtPoint(p.x, p.y);
+      if (cell >= 0) occupancy[cell]++;
     }
   }
 
-  replenishOpenBoundary(dt);
+  replenishOpenBoundary(dt, occupancy);
+  healTracerDensity(occupancy);
 }
 
 export function relocateTracersOutOfSolids() {
