@@ -33,7 +33,13 @@
 
 ## 操作
 
-直接開啟 `index.html` 即可使用；建議用本機靜態伺服器或 GitHub Pages。
+本模擬器是 **buildless ES Modules**（`index.html` 只載入單一 `js/main.js` 模組、零相依套件）。由於 ES 模組**不能透過 `file://` 直接開啟**（瀏覽器 CORS 會擋），請用**本機靜態伺服器**或 **GitHub Pages** 執行——**不要直接雙擊 `index.html`**。本機範例（擇一，然後開 http://localhost:8000/ ）：
+
+```bash
+python -m http.server 8000
+# 或
+npx serve
+```
 
 學生建造爐體時只需要：
 
@@ -52,6 +58,15 @@
 4. 開口過大或過多：觀察冷空氣是否降低高溫區溫度，使二次燃燒未必持續改善。
 5. 改變 tracer 數量：確認它只改變視覺密度，不改變物理指標。
 6. 長時間觀察：確認總粒子數維持開放區基準、壓力投影殘差不爆掉，且「邊界帶粒子」與「視覺重分布」和真正的物質 scalar 分開看待。
+
+## 技術架構
+
+- **Buildless ES Modules**：`index.html` → 單一 `<script type="module" src="js/main.js">`，零相依套件，可直接部署到 GitHub Pages。
+- 模組結構：`js/core/`（格網／場／場景狀態／DOM 接觸點）、`js/physics/`（流體解算與燃燒，無 DOM）、`js/render/`（Canvas 繪圖）、`js/ui/`（工具、預設、指標）、`js/engine.js`、`js/main.js`。
+- **示蹤粒子體積排斥**：每格有上限，達上限的粒子會往相鄰格散開，不會在單一格無限堆疊。
+- 測試（零依賴 Node，不需 `npm install`）：
+  - `node tests/oracle/verify.mjs` — 等價 oracle，對四種爐型預設逐場 bit-exact 比對凍結的 golden。
+  - `node tests/static-regression.mjs` — 結構契約檢查（單一 module 入口、無舊 patch script 等）。
 
 ## 參考方向
 
